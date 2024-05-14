@@ -13,6 +13,9 @@ class Expression(ABC):
         self._id = [id,id] 
         self.shape = shape
         self.children = children
+        for c in self.list_children():
+            c.parents.append(self)
+        self.parents = []
         self.dtype=dtype 
         self.initialize()
 
@@ -80,12 +83,22 @@ class Expression(ABC):
         self.update_ids(fn = update_id)
         return expressions 
     
+    # Propagate shape unboxing functionality upwards
+    def is_shape_set(self):
+        return self.shape.is_set()
+    
+    def unbox_shape(self):
+        self.shape = self.shape.unbox()
+    
+    def safe_unbox(self):
+        if self.is_shape_set():
+            self.unbox_shape()
+
     @abstractmethod
     def eval(self, params, input, cache):
         pass 
 
-
-class Constant(Expression):
+class Parameter(Expression):
     """Returns the parameter at index `index`. Need to specify the shape and dtype of that parameter"""
     def __init__(self, id: int, param_idx: int = 0, shape: Shape = Shape(), dtype: str = "float"):
         super().__init__(id, shape=shape, dtype=dtype)

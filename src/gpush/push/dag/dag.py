@@ -1,10 +1,15 @@
 from .expr import Expression 
 from copy import deepcopy
+from jax import jit
+
 
 class Dag:
     def __init__(self, root:Expression):
         self.root = deepcopy(root)
         self.expressions = self.root.normalize()
+
+    def __call__(self, params, input, return_intermediate = False):
+        return self.eval(params,input,return_intermediate=return_intermediate)
 
     def eval(self, params, input, return_intermediate = False):
         cache = [None]*len(self.expressions)
