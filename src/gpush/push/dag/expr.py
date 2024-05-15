@@ -7,6 +7,7 @@ from itertools import chain
 
 
 class Expression(ABC):
+    frozen = False 
     """A generic expression. Forms the basis of the computational graph / directed acyclic graph.
     Possesses two copies of the id for better id updating. These copies should be identical otherwise."""
     def __init__(self, id: int, shape: Shape = Shape(), children: tuple[Expression] | dict[str,Expression] = tuple(), dtype: str = "float"):
@@ -17,7 +18,7 @@ class Expression(ABC):
             c.parents.append(self)
         self.parents = []
         self.dtype=dtype 
-        self.initialize()
+        self.set_depth()
 
     @property 
     def id(self):
@@ -26,7 +27,7 @@ class Expression(ABC):
         else:
             raise RuntimeError(f"Expression has two different ids: {self._id}")
 
-    def initialize(self):
+    def set_depth(self):
         "Initializes the depth of this expression to be 1 more than the max depth of its children"
         self.depth = 1 + max([c.depth for c in self.list_children()], default=0) 
 
@@ -93,6 +94,20 @@ class Expression(ABC):
     def safe_unbox(self):
         if self.is_shape_set():
             self.unbox_shape()
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if self.frozen:
+            raise RuntimeError("Trying to set an attribute on a frozen expression")
+        return super().__setattr__(name, value)
+    
+    def freeze(self):
+        if self.frozen:
+            return 
+        self.parents = tuple(self.parents)
+        self._id = tuple(self._id)
+        self.frozen = True 
+        for c in self.list_children():
+            c.freeze()
 
     @abstractmethod
     def eval(self, params, input, cache):

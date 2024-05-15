@@ -13,14 +13,21 @@ class InstructionSet(dict[str,Instruction]):
         self.rng = np.random.default_rng()
         self.updated = False 
         self.sampler = None 
+        self.stack_to_instr = {}
 
     def register(self, instr: Instruction, logprob=0):
         self[instr.name] = instr 
         self.logprobs[instr.name]=logprob
         self.updated = True
+        req_stacks = frozenset(instr.required_stacks())
+        if req_stacks in self.stack_to_instr:
+            self.stack_to_instr[req_stacks].append(instr)
+        else:
+            self.stack_to_instr[req_stacks] = [instr]
 
     def unregister(self, instr: Instruction):
         del self[instr.name]
+        self.stack_to_instr[frozenset(instr.required_stacks())].remove(instr)
         self.updated = True 
     
     def sample(self, n: int = 1, squeeze: bool = True) -> Instruction | List[Instruction]:
@@ -48,6 +55,16 @@ class InstructionSet(dict[str,Instruction]):
             return wrapper
         return wrap 
     
-
+    def stack_instructions(self, stacks: List[str]) -> InstructionSet:
+        stacks = frozenset(stacks)
+        instr = []
+        for k in self.stack_to_instr.keys():
+            if k.issubset(stacks):
+                instr.extend(self.stack_to_instr[k])
+        iset = InstructionSet()
+        for i in instr:
+            iset.register(i,self.logprobs[i.name])
+        return iset 
+    
 GLOBAL_INSTRUCTIONS = InstructionSet()
 

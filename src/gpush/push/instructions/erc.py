@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from ..instruction import LiteralInstruction
+from ..instruction import LiteralInstruction, ParamBuilderInstruction
+from ..dag.shape import Shape 
 import numpy as np 
 from typing import Callable
 
@@ -79,4 +80,52 @@ class LambdaERC(ERCGenerator):
         def wrapper(fn):
             return LambdaERC(fn, *args, output_stack=output_stack, name=name, **kwargs)
         return wrapper
+    
+
+class ChoiceERC(ERCGenerator):
+    def __init__(self, vals: list, p: list = None, output_stack: str = None):
+        self.vals = vals 
+        self.p = p 
+        self.output_stack = output_stack
+        self.rng = np.random.default_rng()
+
+    def sample(self):
+        val = self.rng.choice(self.vals,p=self.p)
+        return LiteralInstruction(f"ChoiceERC({val})",val,self.output_stack)
+    
+class ParamBuilderERC(ERCGenerator):
+    def __init__(self, ndims = None, dim_sizes = None, unset_dims=None, dtype=None):
+        self.ndims = self.process_input(ndims)
+        self.dim_sizes = self.process_input(dim_sizes)
+        self.unset_dims = self.process_input(unset_dims)
+        self.dim_sizes = self.process_input(dim_sizes)
+        self.dtype = self.process_input(dtype,type=str)
+        self.rng = np.random.default_rng()
+
+    def process_input(self, input,type=int):
+        if isinstance(input,type):
+            return ([input],[1])
+        elif isinstance(input,list):
+            if isinstance(input[0],list):
+                return input 
+            else:
+                return ([input],[1/len(input)]*len(input))
+        else:
+            raise ValueError("Invalid input to ParamBuilderERC")
+        
+    def choose(self,attr,n=None):
+        return self.rng.choice(attr[0],p=attr[1],size=n)
+    
+    def sample(self):
+        ndims = self.choose(self.ndims)
+        unset_dims = self.choose(self.unset_dims)
+        unset_dims = max(ndims,unset_dims)
+        preset_dims = ndims-unset_dims
+        preset_sizes = self.choose(self.dim_sizes,n=preset_dims)
+        sizes = preset_sizes+[None]*unset_dims
+        self.rng.shuffle(sizes)
+        dtype = self.choose(self.dtype)
+        return ParamBuilderInstruction(f"ParamBuilder({sizes},{dtype})",Shape(sizes),dtype,f"{dtype}_jax_expr")
+
+    
     

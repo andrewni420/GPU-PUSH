@@ -155,6 +155,41 @@ class ParamInstruction(Instruction):
     def required_stacks(self) -> Set[str]:
         return {self.output_stack}
     
+class ParamBuilderInstruction(Instruction):
+    "Builds and pushes a symbolic Parameter Expression representing one of the parameters of the neural network"
+    def __init__(self, name: str, shape: Shape, dtype: str, output_stack: str, docstring: str = None):
+        super().__init__(name, 0, docstring=docstring)
+        self.shape = shape 
+        num_empty = 0
+        for s in self.shape:
+            if s is None:
+                num_empty+=1
+        self.num_empty=num_empty
+        self.input_stacks = {"int":self.num_empty}
+        self.dtype = dtype 
+        self.output_stack = output_stack
+    
+    def evaluate(self, state:PushState) -> PushState:
+        args = state.observe(self.input_stacks)
+        if args is None:
+            return state 
+
+        res_shape = []
+        shape_args = args["int"]
+        for s in self.shape:
+            if s is None:
+                res_shape.append(shape_args.pop(0))
+            else:
+                res_shape.append(s)
+        shape = Shape(*res_shape)
+
+        input = Parameter(state.nsteps, len(state.params), shape=shape, dtype=self.dtype)
+        state.params.append({"shape": shape, "dtype": self.dtype})
+        return state.push_to_stacks({self.output_stack: [input]})
+    
+    def required_stacks(self) -> Set[str]:
+        return {self.output_stack}
+    
 class LiteralInstruction(Instruction):
     "Pushes a literal, such as a float or an integer"
     def __init__(self, name: str, value, output_stack: str, docstring: str = None):
