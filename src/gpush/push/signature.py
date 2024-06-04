@@ -21,6 +21,7 @@ def process_args(*args: Expression, **kwargs: Expression) -> tuple[List[Shape],L
 
 
 def broadcast_signature(*args: Expression, **kwargs: Expression) -> tuple[Shape, str]:
+    "Returns the output shape and datatype of a broadcasted elementwise operation given the input shapes and datatypes"
     shapes, dtypes = process_args(*args, **kwargs)
     shape = broadcast(*shapes)
 
@@ -39,6 +40,7 @@ def broadcast_signature(*args: Expression, **kwargs: Expression) -> tuple[Shape,
     return shape, dtype 
 
 def mmul_signature(*args: Expression, **kwargs: Expression) -> tuple[Shape, str]:
+    "Returns the output shape and datatype of a matrix multiplication operation given the input shapes and datatypes"
     shapes, dtypes = process_args(*args, **kwargs)
     shape = mmul(*shapes)
     
@@ -62,6 +64,7 @@ def mmul_signature(*args: Expression, **kwargs: Expression) -> tuple[Shape, str]
     return shape, dtype 
 
 def conv_signature(*args: Expression, stride=None, padding=None, lhs=None, rhs=None, **kwargs: Expression) -> tuple[Shape, str]:
+    "Returns the output shape and datatype of a generalized n-dimensional convolution given the input shapes and datatypes"
     shapes, dtypes = process_args(*args, **kwargs)
     shape = conv(*shapes, stride=stride, padding=padding, lhs_dilation=lhs, rhs_dilation=rhs)
 
@@ -79,3 +82,24 @@ def conv_signature(*args: Expression, stride=None, padding=None, lhs=None, rhs=N
     SizePlaceholder.link_sizes(shapes[0][1],shapes[1][1])
 
     return shape, dtype  
+
+def aggregate_signature(*args: Expression, axis: Union[int, tuple[int]] = None, **kwargs: Expression):
+    "Returns the output shape and datatype of an aggregating operation like `mean()` given the input shapes and datatypes"
+    shapes, dtypes = process_args(*args, **kwargs)
+    if len(shapes)>1 or len(dtypes)>1:
+        raise ValueError("Can only calculate the aggregate signature of one array at a time")
+    
+    shape,dtype = shapes[0],dtypes[0]
+    
+    if axis is None:
+        return Shape(),dtype
+    
+    if isinstance(axis, int):
+        if axis>=len(shape):
+            return None 
+        return shape[:axis]+shape[axis+1:]
+    else:
+        axis = set(axis)
+        ret = [shape[i] for i in range(len(shape)) if i not in axis]
+        return Shape(*ret)
+    

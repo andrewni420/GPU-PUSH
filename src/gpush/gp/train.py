@@ -3,149 +3,146 @@ from abc import ABC,abstractmethod
 from jax import jit, Array
 import jax.numpy as jnp 
 from typing import List, Any, Callable, Union 
-from dataclasses import dataclass
-from functools import wraps 
+from dataclasses import dataclass, field
+from functools import wraps, update_wrapper
 import numpy as np 
+from frozendict import frozendict 
+import jax.lax as lax 
+
 
 @dataclass(frozen=True)
+class Schedule(ABC):
+    @abstractmethod
+    def step(self, i: int, cur_val: float) -> float:
+        return cur_val
+    
+    def initial_value(self) -> float:
+        return self.step(0,None) 
+    
+@dataclass(frozen=True)
+class ConstantSchedule(Schedule):
+    init_val: float
+
+    def step(self, i: int, cur_val: float) -> float:
+        return self.init_val
+    def initial_value(self) -> float:
+        return self.init_val
+
+@dataclass(frozen=True)
+class LambdaSchedule(Schedule):
+    fn: Callable
+    args: tuple = tuple()
+    kwargs: frozendict = frozendict()
+
+    def step(self, i: int, cur_val: float) -> float:
+        return self.fn(i, cur_val, *self.args, **self.kwargs)
+    
+@dataclass(frozen=True)
+class CosineSchedule(Schedule):
+    init_val: int 
+    max_steps: int 
+    final_val: int = 0
+    def __post_init__(self):
+        if self.max_steps<=0:
+            raise ValueError("Cosine Scheduler max steps must be positive")
+
+    def step(self, i: int, cur_val: float) -> float:
+        return self.final_val + (self.init_val-self.final_val)*jnp.cos(i*jnp.pi/(self.max_steps*2))
+    
+@dataclass(frozen=True)
+class StepwiseLinearSchedule(Schedule):
+    step_vals: tuple[tuple[int,float]] 
+    def safe_step(self, i: int, val: float) -> float:
+        prev_step, prev_val, cur_step, cur_val = [None]*4 
+        for idx,val in self.step_vals:
+            cur_step = idx
+            cur_val = val 
+            if cur_step>i:
+                break 
+            prev_step = cur_step 
+            prev_val = cur_val 
+        denom = cur_step-prev_step 
+        protected_denom = jnp.where(denom==0,1,denom)
+        return prev_val + (cur_val-prev_val)*(i-prev_step)/protected_denom
+
+    def step(self, i: int, val: float) -> float:
+        res = self.safe_step(i,val)
+        res = jnp.where(i>=self.step_vals[-1][0], jnp.array(self.step_vals[-1][1]), res)
+        res = jnp.where(i<self.step_vals[0][0],jnp.array(self.step_vals[0][1]),res)
+        return res 
+        
+    
+State = dict[str,Union[List[Array],float, Schedule]]
+Params = List[Array]
+
 class Optimizer(ABC):
     @abstractmethod
-    def _init(self, params: List[Array]) -> Any:
+    def init(self, params: List[Array]) -> Any:
         pass 
 
     @abstractmethod
-    def _update(self, i: int, grad: List[Array], state: Any) -> Any:
+    def update(self, i: int, grad: List[Array], state: Any) -> Any:
         pass 
 
     @abstractmethod
-    def _get_params(self, state: Any) -> List[Array]:
+    def get_params(self, state: Any) -> List[Array]:
         pass 
-
-    @property 
-    def init(self) -> Callable[[List[Array]], Any]:
-        @wraps(self.init)
-        @jit
-        def wrap_init(params):
-            return self.init(params)
-        return wrap_init
-    
-    @property 
-    def update(self) -> Callable[[List[Array],List[Array], Any], Any]:
-        @wraps(self.update)
-        @jit
-        def wrap_update(params,grad,state):
-            return self.update(params,grad,state)
-        return wrap_update
-    
-    @property 
-    def get_params(self) -> Callable[[Any], List[Array]]:
-        @wraps(self.get_params)
-        @jit
-        def wrap_params(state):
-            return self.get_params(state)
-        return wrap_params
     
     def make_schedule(self, value: float):
-        if isinstance(value,Scheduler):
+        if isinstance(value,Schedule):
             return value 
         else:
-            return Scheduler(value)
+            return ConstantSchedule(value)
 
 @dataclass(frozen=True)
 class SGD(Optimizer):
-    init_lr: Union[float,Scheduler] = 1E-4
-    def _init(self, params: List[Array]) -> dict[str,Union[List[Array],float, Scheduler]]:
-        return {"params": params, "lr":self.make_schedule(self.init_lr)}
-    def _update(self, i: int, grad: List[Array], state: dict[str,Union[List[Array],float,Scheduler]]) -> dict[str,Union[List[Array],float, Scheduler]]:
+    lr: Schedule = ConstantSchedule(1E-4)
+    def init(self, params: Params) -> State:
+        return {"params": params, "lr":self.lr.initial_value()}
+    def update(self, i: int, grad: Params, state: State) -> State:
         x = state["params"]
-        lr = state["lr"]
-        return {"params": [x_-g*lr for x_,g in zip(x,grad)], "lr": lr.step()}
-    def _get_params(self, state: dict[str,Union[List[Array],float, Scheduler]]) -> List[Array]:
+        lr = self.lr.step(i,state["lr"])
+        return {"params": [x_-g*lr for x_,g in zip(x,grad)], "lr": lr}
+    def get_params(self, state: State) -> Params:
         return state["params"]
 
 @dataclass(frozen=True)
 class Momentum(SGD):
-    init_m: Union[float,Scheduler] = 0.9
-    def _init(self, params: List[Array]) -> dict[str,Union[List[Array],float, Scheduler]]:
-        return {"params": params, "momentum": [jnp.zeros_like(p) for p in params], "m": self.make_schedule(self.init_m), "lr": self.make_schedule(self.init_lr)}
-    def _update(self, i: int, grad: List[Array], state: dict[str,Union[List[Array],float, Scheduler]]) -> dict[str,Union[List[Array],float, Scheduler]]:
-        m,lr,x,velocity = [state[k] for k in ["m", "lr", "x", "params"]]
+    mass: Schedule = ConstantSchedule(0.9)
+    def init(self, params: Params) -> State:
+        return {"params": params, "momentum": [jnp.zeros_like(p) for p in params], "mass": self.mass.initial_value(), "lr": self.lr.initial_value()}
+    def update(self, i: int, grad: Params, state: State) -> State:
+        m,lr,x,velocity = [state[k] for k in ["mass", "lr", "params", "momentum"]]
+        lr = self.lr.step(i,lr)
+        m = self.mass.step(i,m)
         velocity = [v*m+g for v,g in zip(velocity,grad)]
-        x = [x_-self.lr*v for x_,v in zip(x,m)]
-        return {"params": x, "momentum": velocity, "m": m.step(), "lr": lr.step()}
+        x = [x_-lr*v for x_,v in zip(x,velocity)]
+        return {"params": x, "momentum": velocity, "mass": m, "lr": lr}
 
 @dataclass(frozen=True)
 class Adam(SGD):
-    init_b1: Union[float,Scheduler] = 0.9
-    init_b2: Union[float,Scheduler] = 0.99 
-    eps: float = 1E-8
-    def _init(self, params: List[Array]) -> dict[str,Union[List[Array],float, Scheduler]]:
+    b1: Schedule = ConstantSchedule(0.9)
+    b2: Schedule = ConstantSchedule(0.99)
+    eps: Schedule = ConstantSchedule(1E-8)
+    def init(self, params: Params) -> State:
         return {"params": params, 
-                "lr": self.make_schedule(self.init_lr),
-                "b1": self.make_schedule(self.init_b1), 
-                "b2":self.make_schedule(self.init_b2),
-                "eps":self.eps,
+                "lr": self.lr.initial_value(),
+                "b1": self.b1.initial_value(), 
+                "b2":self.b2.initial_value(),
+                "eps":self.eps.initial_value(),
                 "velocity": [jnp.zeros_like(p) for p in params],
                 "var": [jnp.zeros_like(p) for p in params]}
-    def _update(self, i: int, grad: List[Array], state: dict[str,Union[List[Array],float, Scheduler]]) -> dict[str,Union[List[Array],float, Scheduler]]:
+    def update(self, i: int, grad: Params, state: State) -> State:
         params,b1,b2,lr,eps,velocity,var = [state[k] for k in ["params","b1","b2","lr","eps","velocity","var"]]
-        var = [((1-b1)*g+b1*v)/(1-jnp.asarray(b1)**(i+1)) for g,v in zip(grad,var)]
-        velocity = [((1-b2)*jnp.square(g))/(1-jnp.asarray(b2)**(i+1)) + b2*v for g,v in zip(grad,velocity)]
-        x = [x-lr*v/(jnp.sqrt(v_)+eps) for x,v,v_ in zip(params,velocity,var)]
-        return {"params":x, "b1":b1.step(),"b2":b2.step(),"lr":lr.step(),"eps":eps,"velocity":velocity,"var":var}
+        b1 = self.b1.step(i,b1)
+        b2 = self.b2.step(i,b2)
+        lr = self.lr.step(i,lr)
+        eps = self.eps.step(i,eps)
+        velocity = [((1-b1)*g+b1*v) for g,v in zip(grad,velocity)]
+        mhat = [m/(1-jnp.asarray(b1)**(i+1)) for m in velocity]
+        var = [((1-b2)*jnp.square(g)+ b2*v) for g,v in zip(grad,var)]
+        vhat = [v/(1-jnp.asarray(b2)**(i+1)) for v in var]
+        x = [x-lr*v/(jnp.sqrt(v_)+eps) for x,v,v_ in zip(params,mhat,vhat)]
+        return {"params":x, "b1":b1,"b2":b2,"lr":lr,"eps":eps,"velocity":velocity,"var":var}
 
-
-class Scheduler(float, ABC):
-    def __init__(self, val: float, step: int = 0):
-        self.i = step 
-    def __new__(cls, val: float, step: int = 0):
-        super().__new__(cls, val)
-
-    @abstractmethod
-    def step(self) -> Scheduler:
-        return self 
-
-class LambdaScheduler(Scheduler):
-    def __init__(self, val: float, init_step: int = 0, fn: Callable[[int,float],float] = None):
-        self.i = init_step 
-        self.fn = fn 
-    def __new__(cls, val: float, init_step: int = 0, fn: Callable[[int,float],float] = None):
-        super().__new__(cls, val) 
-
-    def step(self):
-        newval = self.fn(self.i,self)
-        return LambdaScheduler(newval,step=self.i+1,fn=self.fn)
-    
-class CosineScheduler(Scheduler):
-    def __init__(self, val: float, step: int = 0, max_steps: int = 0):
-        super().__init__(val, step=step)
-        self.max_steps = max_steps 
-    def __new__(cls, val: float, step: int = 0, max_steps: int = 0):
-        super().__new__(cls, val)
-    
-    def step(self):
-        newval = jnp.cos(self.i*np.pi/(self.max_steps*2))
-        return CosineScheduler(newval, step=self.i+1, max_steps = self.max_steps)
-    
-class StepwiseLinear(Scheduler):
-    def __init__(self, val: float, step: int = 0, step_vals: list[tuple[int,float]] = None):
-        super().__init__(val, step=step)
-        self.step_vals = step_vals 
-    def __new__(cls, val: float, step: int = 0, max_steps: int = 0):
-        super().__new__(cls, val)
-    
-    def step(self):
-        prev_step, prev_val, cur_step, cur_val = [None]*4 
-        for i,val in self.step_vals:
-            cur_step = i 
-            cur_val = val 
-            if cur_step>self.i:
-                break 
-            prev_step = cur_step 
-            prev_val = cur_val 
-        if prev_val is None:
-            return StepwiseLinear(cur_val,step=self.i+1, step_vals = self.step_vals)
-        else:
-            val = prev_val + (cur_val-prev_val)*(self.i-prev_step)/(cur_step-prev_step)
-            return StepwiseLinear(val, step=self.i+1, step_vals=self.step_vals)
     
