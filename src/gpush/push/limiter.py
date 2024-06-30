@@ -14,7 +14,7 @@ class Limiter(ABC):
         elif isinstance(output, dict):
             output = {k:[fn(v_) for v_ in v] for k,v in output.items()}
         else:
-            output = fn(output)
+            return fn(output)
         return output
 
     def limit(self, fn):
@@ -55,7 +55,6 @@ class GrowthLimiter(Limiter):
             return None 
         if isinstance(output, dict) and sum([len(i) for i in output.values()])>self.limit:
             return None 
-
 
 DEFAULT_SIZE_LIMIT = 1E6
 DEFAULT_SIZE_LIMITER = SizeLimiter(magnitude=DEFAULT_SIZE_LIMIT)

@@ -159,6 +159,7 @@ class Function(Expression):
         return inputs 
     
     def eval(self, params, input, cache):
+        """Evaluates the function based on the cached values of its children. If not all children were evaluated, returns None"""
         inputs = self.collect_inputs(cache)
         if inputs is None:
             return None 

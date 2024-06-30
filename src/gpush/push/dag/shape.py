@@ -119,7 +119,7 @@ def conv(shape1: Shape,
     stride,lhs_dilation,rhs_dilation = [make_default(x,1,n-2) for x in [stride, lhs_dilation, rhs_dilation]]
 
     ret = Shape(shape1[0], shape2[0])+Shape(*map(spatial_size, shape1[2:], shape2[2:], stride, padding, lhs_dilation, rhs_dilation))
-    print(tuple(ret))
+    # print(tuple(ret))
     return ret
 
 def make_placeholder_arithmetic(func):
@@ -335,15 +335,19 @@ class Shape(tuple):
                 return False 
         return True 
     
-    def unbox(self):
-        "Unboxes all the size placeholders in this shape after they have all been set."
+    def unbox(self, default: int = None):
+        """Unboxes all the size placeholders in this shape after they have all been set. 
+        If default is not None, replaces unset placeholders with the default"""
         vals = []
         for s in self:
             if isinstance(s,SizePlaceholder):
                 if s.is_set():
                     vals.append(s.value)
                 else:
-                    raise RuntimeError("Cannot unbox shape when placeholders are None")
+                    if default is None:
+                        raise RuntimeError("Cannot unbox shape when placeholders are None")
+                    else:
+                        vals.append(default)
             else:
                 vals.append(s)
         return Shape(*vals)

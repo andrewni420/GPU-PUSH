@@ -2,19 +2,28 @@ from abc import ABC, abstractmethod
 from .instruction import CodeBlockClose, Instruction
 from typing import Union
 
+Genome = list[Union[Instruction, CodeBlockClose, "Genome"]]
+Program = list[Union[Instruction, "Program"]]
+
 class Compiler():
+    "A compiler that turns genomes into programs. Can directly call or use `Compiler.compile()`"
+
     @abstractmethod
-    def compile(self, program: list):
+    def compile(self, genome: list) -> list:
         pass 
 
-    def __call__(self, program: list):
-        return self.compile(program)
+    def __call__(self, genome: list) -> list:
+        "Compiles a genome into a program"
+        return self.compile(genome)
     
 class PlushyCompiler(Compiler):
-    def compile(self, program: list[Union[Instruction, CodeBlockClose]]):
+    "A compiler that turns plushy genomes into push programs"
+
+    def compile(self, genome: Genome) -> Program:
+        "Compiles a plushy genome into a push program"
         ret = []
         cur_depth=0
-        for instr in program:
+        for instr in genome:
             if isinstance(instr,CodeBlockClose):
                 cur_depth = max(0,cur_depth-1)
             else:

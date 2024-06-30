@@ -12,6 +12,7 @@ import jax.lax as lax
 
 @dataclass(frozen=True)
 class Schedule(ABC):
+    "A generic class to change a hyperparameter over the course of learning"
     @abstractmethod
     def step(self, i: int, cur_val: float) -> float:
         return cur_val
@@ -21,6 +22,7 @@ class Schedule(ABC):
     
 @dataclass(frozen=True)
 class ConstantSchedule(Schedule):
+    "A fixed hyperparameter value"
     init_val: float
 
     def step(self, i: int, cur_val: float) -> float:
@@ -30,6 +32,7 @@ class ConstantSchedule(Schedule):
 
 @dataclass(frozen=True)
 class LambdaSchedule(Schedule):
+    "Uses a custom function to set the hyperparameter value based on its current value and the current iteration"
     fn: Callable
     args: tuple = tuple()
     kwargs: frozendict = frozendict()
@@ -39,6 +42,7 @@ class LambdaSchedule(Schedule):
     
 @dataclass(frozen=True)
 class CosineSchedule(Schedule):
+    "A scheduler to implement a cosine annealing schedule"
     init_val: int 
     max_steps: int 
     final_val: int = 0
@@ -51,9 +55,16 @@ class CosineSchedule(Schedule):
     
 @dataclass(frozen=True)
 class StepwiseLinearSchedule(Schedule):
+    """A scheduler to implement a stepwise linear schedule. 
+    The first and last step values extend in a flat line to negative infinity and positive infinity, respectively"""
     step_vals: tuple[tuple[int,float]] 
+    "The endpoints of the stepwise linear regions"
+    def __post_init__(self):
+        if len(self.step_vals)<1:
+            raise ValueError("Must specify at least one step value")
     def safe_step(self, i: int, val: float) -> float:
-        prev_step, prev_val, cur_step, cur_val = [None]*4 
+        "Calculate the value at the ith step, without raising an error"
+        prev_step, prev_val, cur_step, cur_val = [0]*4 
         for idx,val in self.step_vals:
             cur_step = idx
             cur_val = val 
@@ -66,6 +77,7 @@ class StepwiseLinearSchedule(Schedule):
         return prev_val + (cur_val-prev_val)*(i-prev_step)/protected_denom
 
     def step(self, i: int, val: float) -> float:
+        "Calculate the value at the ith step, ensuring that the first and last step values extend outwards."
         res = self.safe_step(i,val)
         res = jnp.where(i>=self.step_vals[-1][0], jnp.array(self.step_vals[-1][1]), res)
         res = jnp.where(i<self.step_vals[0][0],jnp.array(self.step_vals[0][1]),res)
@@ -76,6 +88,7 @@ State = dict[str,Union[List[Array],float, Schedule]]
 Params = List[Array]
 
 class Optimizer(ABC):
+    "A generic class to use gradient information to improve a neural network's parameters"
     @abstractmethod
     def init(self, params: List[Array]) -> Any:
         pass 

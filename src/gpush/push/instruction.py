@@ -109,13 +109,14 @@ class SimpleInstruction(Instruction):
             if isinstance(s,str):
                 return {s}
             return set(s)
-        return get_stacks(self.input_stacks)+get_stacks(self.output_stacks)
+        return get_stacks(self.input_stacks).union(get_stacks(self.output_stacks))
     
 class SimpleExprInstruction(SimpleInstruction):
     """A simple instruction that constructs an Expression"""
     def __init__(self, name: str, fn: Callable, signature: Callable, input_stacks: tuple[str], output_stack: str, code_blocks: int, docstring=None, validator: Callable = None):
         def make_expression(nsteps, *args, **kwargs):
             shape, dtype = self.signature(**kwargs) if isinstance(input_stacks,dict) else self.signature(*args)
+            # print(f"shape {shape} dtype {dtype}")
             if shape is None or dtype is None:
                 return None 
             children=kwargs if isinstance(input_stacks,dict) else tuple(args)
@@ -156,7 +157,8 @@ class ParamInstruction(Instruction):
         return {self.output_stack}
     
 class ParamBuilderInstruction(Instruction):
-    "Builds and pushes a symbolic Parameter Expression representing one of the parameters of the neural network"
+    """Builds and pushes a symbolic Parameter Expression representing one of the parameters of the neural network. 
+    Uses elements from the integer stack to fill in None values in the given shape."""
     def __init__(self, name: str, shape: Shape, dtype: str, output_stack: str, docstring: str = None):
         super().__init__(name, 0, docstring=docstring)
         self.shape = shape 

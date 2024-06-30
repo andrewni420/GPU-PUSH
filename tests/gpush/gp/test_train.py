@@ -5,6 +5,7 @@ from typing import Callable
 import numpy as np  
 import jax.numpy as jnp 
 import jax 
+from jax import jit
 
 @pytest.mark.parametrize("val", [0, 1E-5, 1E-4, 1E-3, 1E-2, 0.1, 1])
 def test_constant_schedule(val):
@@ -94,6 +95,7 @@ def test_convergence(params, loss_tolerance, loss_fn, tolerance, res, lr,opt_fac
     grad_fn = jax.grad(loss_fn)
     opt = opt_factory(lr)
 
+    @jit
     def update(i,cur_state):
         params = opt.get_params(cur_state)
         grad = grad_fn(params)

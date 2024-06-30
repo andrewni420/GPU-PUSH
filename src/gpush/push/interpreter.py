@@ -15,17 +15,20 @@ class Interpreter():
         self.state = state or self.state 
         self.max_steps = max_steps or self.max_steps
 
-        state["exec"].extend(program)
+        state["exec"].extend(program[::-1])
         while len(state["exec"])>0 and self.state.nsteps<self.max_steps:
             self.step(state)
         return self.state if out_stacks is None else self.state.observe(out_stacks)
 
-    def step(self):
-        next_instr = self.state["exec"].pop()
+    def step(self, state: PushState = None):
+        state = state or self.state
+        next_instr = state["exec"].pop()
         if isinstance(next_instr,list):
-            self.state["exec"].extend(next_instr)
+            state["exec"].extend(next_instr)
         elif isinstance(next_instr, Instruction):
-            self.state = next_instr(self.state)
+            state = next_instr(state)
         else:
             raise NotImplementedError(f"Unrecognized item on the exec stack: {next_instr}")
+    
+
         
