@@ -1,7 +1,7 @@
 from ..instruction import SimpleInstruction
 from ..instruction_set import GLOBAL_INSTRUCTIONS
 from ..state import PushState
-from .utils import WrapperCreator
+from .utils import WrapperCreator, simple_instruction
 from ..limiter import DEFAULT_SIZE_LIMITER
 from ..signature import broadcast_signature
 import jax.numpy as jnp 

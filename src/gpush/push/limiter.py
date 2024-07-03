@@ -46,15 +46,51 @@ class SizeLimiter(Limiter):
         return self.apply(lambda x: jnp.maximum(jnp.minimum(x,self.high),self.low), output)
 
 class GrowthLimiter(Limiter):
-    "Limit the number of items pushed onto the push state"
-    def __init__(self, limit=None):
-        self.limit = limit or float('inf')
+    "Limit the total number of items pushed onto the push state"
+    maxlen: int 
+    "Maximum number of items pushed onto the state"
+
+    def __init__(self, maxlen: int = None):
+        self.maxlen = maxlen or float('inf')
 
     def __call__(self, output):
-        if isinstance(output,list) and len(output)>self.limit:
-            return None 
-        if isinstance(output, dict) and sum([len(i) for i in output.values()])>self.limit:
-            return None 
+        if isinstance(output,list) and len(output)>self.maxlen:
+            return output[:self.maxlen] 
+        if isinstance(output, dict):
+            total = sum([len(i) for i in output.values()])
+            while total>self.maxlen:
+                sorted_keys = sorted(output.keys(),key=lambda x:len(output[x]), reverse=True)
+                maxlen = len(output[sorted_keys[0]])
+                second_idx=1
+                while second_idx<len(sorted_keys) and len(output[sorted_keys[second_idx]])==maxlen:
+                    second_idx+=1
+                second_len = 0 if second_idx==len(sorted_keys) else len(output[sorted_keys[second_idx]])
+                cur_keys = [k for k in sorted_keys if len(output[k])==maxlen]
+                to_subtract = min(maxlen-second_len, int(jnp.ceil((total-self.maxlen)/len(cur_keys))))
+                for k in cur_keys:
+                    output[k] = output[k][:-to_subtract]
+                total-=to_subtract*len(cur_keys)
+            return output 
+        
+class StackLimiter(Limiter):
+    "Limit the number of items pushed onto each stack"
+    maxlen: int 
+    "Maximum number of items pushed onto each stack"
+
+    def __init__(self, maxlen: int = None):
+        self.maxlen = float('inf') if maxlen is None else maxlen
+        if self.maxlen<0:
+            raise ValueError("maxlen must be nonnegative")
+
+    def __call__(self, output):
+        if isinstance(output,list) or isinstance(output, tuple):
+            return output if self.maxlen>0 else [] 
+        if isinstance(output, dict):
+            return {k:v[:self.maxlen] for k,v in output.items()}
 
 DEFAULT_SIZE_LIMIT = 1E6
 DEFAULT_SIZE_LIMITER = SizeLimiter(magnitude=DEFAULT_SIZE_LIMIT)
+DEFAULT_GROWTH_LIMIT = 100
+DEFAULT_GROWTH_LIMITER = GrowthLimiter(maxlen=DEFAULT_GROWTH_LIMIT)
+DEFAULT_STACK_LIMIT = 100
+DEFAULT_STACK_LIMITER = StackLimiter(maxlen=DEFAULT_STACK_LIMIT)

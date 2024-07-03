@@ -22,20 +22,20 @@ def test_arithmetic(stack, name, x, y):
     init_graph_state.nsteps=2
     output_stack = fn.kwargs["output_stacks"]
 
-    keys = [f"{name}_eager"]
+    keys = [f"{name}"]
     if fn.kwargs.get("limiter",None) is not None:
-        keys.append(f"{name}_eager_limit")
+        keys.append(f"{name}_limit")
     for k in keys:
         assert k in GLOBAL_INSTRUCTIONS
 
-    if f"{name}_eager" in GLOBAL_INSTRUCTIONS:
-        out_state = GLOBAL_INSTRUCTIONS[f"{name}_eager"](deepcopy(init_state))
+    if f"{name}" in GLOBAL_INSTRUCTIONS:
+        out_state = GLOBAL_INSTRUCTIONS[f"{name}"](deepcopy(init_state))
         assert out_state.nsteps==1 
         assert out_state[output_stack] == [res]
 
-    if f"{name}_eager_limit" in GLOBAL_INSTRUCTIONS:
+    if f"{name}_limit" in GLOBAL_INSTRUCTIONS:
         limit_res = fn.kwargs["limiter"](fn(**{stack: [x,y]}))
-        out_state = GLOBAL_INSTRUCTIONS[f"{name}_eager_limit"](deepcopy(init_state))
+        out_state = GLOBAL_INSTRUCTIONS[f"{name}_limit"](deepcopy(init_state))
         assert out_state.nsteps==1 
         assert out_state[output_stack] == [limit_res]
 
@@ -52,9 +52,9 @@ def test_cast(stack, x):
     init_graph_state.nsteps=2
     output_stack = fn.kwargs["output_stacks"]
 
-    keys = [f"{name}_eager"]
+    keys = [f"{name}"]
     if fn.kwargs.get("limiter",None) is not None:
-        keys.append(f"{name}_eager_limit")
+        keys.append(f"{name}_limit")
     if fn.kwargs.get("signature",None) is not None:
         keys.append(f"{name}_graph_limit")
         if fn.kwargs.get("limiter",None) is not None:
@@ -62,14 +62,14 @@ def test_cast(stack, x):
     for k in keys:
         assert k in GLOBAL_INSTRUCTIONS
 
-    if f"{name}_eager" in GLOBAL_INSTRUCTIONS:
-        out_state = GLOBAL_INSTRUCTIONS[f"{name}_eager"](deepcopy(init_state))
+    if f"{name}" in GLOBAL_INSTRUCTIONS:
+        out_state = GLOBAL_INSTRUCTIONS[f"{name}"](deepcopy(init_state))
         assert out_state.nsteps==1 
         assert out_state[output_stack] == [res]
 
-    if f"{name}_eager_limit" in GLOBAL_INSTRUCTIONS:
+    if f"{name}_limit" in GLOBAL_INSTRUCTIONS:
         limit_res = fn.kwargs["limiter"](fn(x))
-        out_state = GLOBAL_INSTRUCTIONS[f"{name}_eager_limit"](deepcopy(init_state))
+        out_state = GLOBAL_INSTRUCTIONS[f"{name}_limit"](deepcopy(init_state))
         assert out_state.nsteps==1 
         assert out_state[output_stack] == [limit_res]
 

@@ -1,19 +1,19 @@
 from .expr import Expression 
 from copy import deepcopy
-from jax import jit, grad, value_and_grad, Array
+from jax import jit, grad, value_and_grad, Array, vmap 
 from typing import Callable 
 
 
 class Dag:
     """A wrapper class around `Expression` to facilitate execution of the computational graph."""
     root: Expression 
-    "The wrapped expression, the root of the computational graph"
+    "The expression at the root of the computational graph"
     expressions: list[Expression]
     "A list of all of the sub-expressions, each corresponding to a subgraph"
     _fn: Callable
-    "A jit-ed `_eval` returning all intermediates"
+    "A jit-ed vectorized `_eval` returning the final value only"
     _grad: dict[tuple[Callable,bool],Callable] 
-    "A cache of jit-ed gradients, one for each combination of the loss function and whether to return the loss"
+    "A cache of jit-ed gradients/value_and_grads, one for each combination of the loss function and whether to return the loss"
 
     def __init__(self, root:Expression):
         self.root = deepcopy(root)
@@ -29,23 +29,20 @@ class Dag:
     
     @property
     def fn(self):
-        "A jit-ed _eval, returning all intermediates"
+        "A jit-ed vectorized eval, returning only the final value"
         if self._fn is not None:
             return self._fn
         else:
-            self._fn = jit(lambda params,input: self._eval(params,input))
+            self._fn = jit(vmap(lambda params,input: self._eval(params,input)[self.root.id],in_axes=[None,0]))
             return self._fn
         
     def grad(self, loss_fn: Callable, return_value: bool = False) -> Callable:
-        """Returns a jit-ed function to calculate the gradient with respect to a loss function.
+        """Returns a jit-ed vectorized function to calculate the gradient with respect to a loss function.
         Caches values to avoid re-jit-ing many times."""
         if (loss_fn,return_value) in self._grad:
             return self._grad[(loss_fn,return_value)]
         
-        def fn(params, input, target):
-            output = self._eval(params, input)[self.root.id]
-            loss = loss_fn(output, target)
-            return loss 
+        fn = lambda params, input, target: loss_fn(self.fn(params, input), target)
         
         if return_value:
             func =  jit(value_and_grad(fn))
@@ -56,7 +53,7 @@ class Dag:
         return func 
 
     def eval(self, params, input, return_intermediate = False):
-        "Evaluate the graph given some parameters and inputs. Optionally returns the values of all intermediate sub-expressions"
+        """Evaluate the graph given some parameters and **unbatched** inputs. Optionally returns the values of all intermediate sub-expressions."""
         res = self._eval(params,input)
         return (res[self.root.id],res) if return_intermediate else res[self.root.id]
 

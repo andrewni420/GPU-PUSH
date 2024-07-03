@@ -13,23 +13,20 @@ import jax.lax as lax
 @dataclass(frozen=True)
 class Schedule(ABC):
     "A generic class to change a hyperparameter over the course of learning"
+    init_val: float 
+    "Initial hyperparameter value"
+
     @abstractmethod
     def step(self, i: int, cur_val: float) -> float:
         return cur_val
     
-    def initial_value(self) -> float:
-        return self.step(0,None) 
-    
 @dataclass(frozen=True)
 class ConstantSchedule(Schedule):
     "A fixed hyperparameter value"
-    init_val: float
 
     def step(self, i: int, cur_val: float) -> float:
         return self.init_val
-    def initial_value(self) -> float:
-        return self.init_val
-
+    
 @dataclass(frozen=True)
 class LambdaSchedule(Schedule):
     "Uses a custom function to set the hyperparameter value based on its current value and the current iteration"
@@ -43,7 +40,6 @@ class LambdaSchedule(Schedule):
 @dataclass(frozen=True)
 class CosineSchedule(Schedule):
     "A scheduler to implement a cosine annealing schedule"
-    init_val: int 
     max_steps: int 
     final_val: int = 0
     def __post_init__(self):
@@ -64,23 +60,20 @@ class StepwiseLinearSchedule(Schedule):
             raise ValueError("Must specify at least one step value")
     def safe_step(self, i: int, val: float) -> float:
         "Calculate the value at the ith step, without raising an error"
-        prev_step, prev_val, cur_step, cur_val = [0]*4 
-        for idx,val in self.step_vals:
-            cur_step = idx
-            cur_val = val 
-            if cur_step>i:
-                break 
-            prev_step = cur_step 
-            prev_val = cur_val 
-        denom = cur_step-prev_step 
+        steps = jnp.array([s for s,v in self.step_vals])
+        values = jnp.array([v for s,v in self.step_vals])
+        cur_idx = jnp.argmax(i<steps)
+        prev_step = jnp.where(cur_idx==0,0,steps[cur_idx-1])
+        prev_val = jnp.where(cur_idx==0,self.init_val,values[cur_idx-1])
+        denom = steps[cur_idx]-prev_step
         protected_denom = jnp.where(denom==0,1,denom)
-        return prev_val + (cur_val-prev_val)*(i-prev_step)/protected_denom
+        return prev_val + (values[cur_idx]-prev_val)*(i-prev_step)/protected_denom
 
     def step(self, i: int, val: float) -> float:
-        "Calculate the value at the ith step, ensuring that the first and last step values extend outwards."
+        "Calculate the value at the ith step, ensuring that the initial value and last step value extend outwards."
         res = self.safe_step(i,val)
         res = jnp.where(i>=self.step_vals[-1][0], jnp.array(self.step_vals[-1][1]), res)
-        res = jnp.where(i<self.step_vals[0][0],jnp.array(self.step_vals[0][1]),res)
+        res = jnp.where(i<=0, self.init_val, res)
         return res 
         
     
@@ -111,7 +104,7 @@ class Optimizer(ABC):
 class SGD(Optimizer):
     lr: Schedule = ConstantSchedule(1E-4)
     def init(self, params: Params) -> State:
-        return {"params": params, "lr":self.lr.initial_value()}
+        return {"params": params, "lr":self.lr.init_val}
     def update(self, i: int, grad: Params, state: State) -> State:
         x = state["params"]
         lr = self.lr.step(i,state["lr"])
@@ -123,7 +116,7 @@ class SGD(Optimizer):
 class Momentum(SGD):
     mass: Schedule = ConstantSchedule(0.9)
     def init(self, params: Params) -> State:
-        return {"params": params, "momentum": [jnp.zeros_like(p) for p in params], "mass": self.mass.initial_value(), "lr": self.lr.initial_value()}
+        return {"params": params, "momentum": [jnp.zeros_like(p) for p in params], "mass": self.mass.init_val, "lr": self.lr.init_val}
     def update(self, i: int, grad: Params, state: State) -> State:
         m,lr,x,velocity = [state[k] for k in ["mass", "lr", "params", "momentum"]]
         lr = self.lr.step(i,lr)
@@ -139,10 +132,10 @@ class Adam(SGD):
     eps: Schedule = ConstantSchedule(1E-8)
     def init(self, params: Params) -> State:
         return {"params": params, 
-                "lr": self.lr.initial_value(),
-                "b1": self.b1.initial_value(), 
-                "b2":self.b2.initial_value(),
-                "eps":self.eps.initial_value(),
+                "lr": self.lr.init_val,
+                "b1": self.b1.init_val, 
+                "b2":self.b2.init_val,
+                "eps":self.eps.init_val,
                 "velocity": [jnp.zeros_like(p) for p in params],
                 "var": [jnp.zeros_like(p) for p in params]}
     def update(self, i: int, grad: Params, state: State) -> State:

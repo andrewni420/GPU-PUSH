@@ -8,7 +8,7 @@ INITIALIZERS: dict[str,init.Initializer] = {#"constant": init.constant(),
                 "delta_orthogonal": init.delta_orthogonal(),
                 "glorot_normal": init.glorot_normal(),
                 "glorot_uniform": init.glorot_uniform(),
-                "he_normal": init.he_normal(),
+                "he_normal": init.he_normal(in_axis=0,out_axis=1),
                 "he_uniform": init.he_uniform(),
                 "lecun_normal": init.lecun_normal(),
                 "lecun_uniform": init.lecun_uniform(),
@@ -62,7 +62,7 @@ class PushState(dict):
             for stack,n in stacks.items():
                 if len(self[stack])<n:
                     return None 
-                res[stack] = self[stack][-n:]
+                res[stack] = self[stack][-n:] if n>0 else []
             return res
     
     def pop_from_stacks(self, stacks:Union[dict[str,int],tuple]):
@@ -70,7 +70,7 @@ class PushState(dict):
         if isinstance(stacks,tuple):
             stacks = {stack:1 for stack in stacks}
         for k,v in stacks.items():
-            self[k] = self[k][:-v]
+            self[k] = self[k][:-v] if v>0 else self[k]
         return self 
     
     def push_to_stacks(self, stacks: dict):
@@ -87,34 +87,36 @@ class PushState(dict):
         self.nsteps+=1 
         return self 
     
-    def init_param(self, key: Array, param: dict) -> Array:
+    def init_param(self, key: Array, param: dict, default: str = None) -> Array:
         """Initializes a parameter array using a random key.
 
         Parameters:
-            key (Array): random key
+            key (Array): The random key
             param (dict): A dictionary containing the shape, datatype, and optionally the initializer.
                 If no initializer is specified, uses kaiming initialization
+            default (str): The default initializer to use. Otherwise resorts to normal for 1d and kaiming for 2+d
             
         Returns:
             Array: The initialized parameter array"""
         
         if "initializer" not in param:
-            initializer = INITIALIZERS["he_normal"]
+            initializer = INITIALIZERS[default or "he_normal"] if len(param["shape"])>1 else INITIALIZERS[default or "normal"]
         else:
             initializer = INITIALIZERS[param["initializer"]]
         return initializer(key, param["shape"].unbox(default=1), param["dtype"])
     
-    def init_params(self, key: Array) -> list[Array]:
+    def init_params(self, key: Array, default: str = None) -> list[Array]:
         """Initializes all of the parameters created during execution
         
         Parameters:
-            key (Array): random key
+            key (Array): The random key
+            default (str): The default initializer to use. Otherwise resorts to normal for 1d and kaiming for 2+d
         
         Returns:
             list[Array]: A list of all of the created parameters, corresponding to the parameter specifications in self.params"""
         
-        key, subkeys = random.split(key,len(self.params))
-        params = [self.init_param(k,p) for k,p in zip(subkeys, self.params)]
+        subkeys = random.split(key,len(self.params))
+        params = [self.init_param(k,p,default=default) for k,p in zip(subkeys, self.params)]
         return params 
     
 STATE_TEMPLATES = {"push": {"exec": [], "int": [], "float": []},

@@ -32,6 +32,8 @@ class Instruction(ABC):
     def required_stacks(self) -> Set[str]:
         pass 
 
+    def copy(self) -> Instruction:
+        return self 
 
 class StateToStateInstruction(Instruction):
     "An instruction that applies a function which takes a `PushState` and returns a `PushState`"
@@ -74,10 +76,9 @@ class SimpleInstruction(Instruction):
         
         if self.validator is not None:
             if isinstance(self.input_stacks,tuple) and not self.validator(*args):
-                return None 
+                return state 
             if isinstance(self.input_stacks,dict) and not self.validator(**args):
-                return None 
-            
+                return state 
             
         
         if isinstance(self.input_stacks, dict):
@@ -111,16 +112,35 @@ class SimpleInstruction(Instruction):
             return set(s)
         return get_stacks(self.input_stacks).union(get_stacks(self.output_stacks))
     
+    
 class SimpleExprInstruction(SimpleInstruction):
     """A simple instruction that constructs an Expression"""
-    def __init__(self, name: str, fn: Callable, signature: Callable, input_stacks: tuple[str], output_stack: str, code_blocks: int, docstring=None, validator: Callable = None):
+    def __init__(self, name: str, fn: Callable, signature: Callable, input_stacks: Union[str,tuple[str]], output_stack: str, code_blocks: int, docstring=None, validator: Callable = None, is_child_stack: Callable = lambda x:"_expr" in x):
         def make_expression(nsteps, *args, **kwargs):
             shape, dtype = self.signature(**kwargs) if isinstance(input_stacks,dict) else self.signature(*args)
-            # print(f"shape {shape} dtype {dtype}")
             if shape is None or dtype is None:
                 return None 
-            children=kwargs if isinstance(input_stacks,dict) else tuple(args)
-            return Function(nsteps, fn, children=children, shape=shape, dtype=dtype)
+            if isinstance(input_stacks,dict):
+                children = {k:v for k,v in kwargs.items() if is_child_stack(k)}
+                other_args = {k:v for k,v in kwargs.items() if not is_child_stack(k)}
+                reconstruct_args = None  
+            else:
+                in_stacks = [input_stacks] if isinstance(input_stacks,str) else input_stacks
+                children = tuple(v for k,v in zip(in_stacks,args) if is_child_stack(k))
+                other_args = tuple(v for k,v in zip(in_stacks,args) if not is_child_stack(k))
+                def reconstruct_args(children, other_args):
+                    res = []
+                    c = 0
+                    o = 0
+                    for k in in_stacks:
+                        if is_child_stack(k):
+                            res.append(children[c])
+                            c+=1
+                        else:
+                            res.append(other_args[o])
+                            o+=1
+                    return tuple(res)
+            return Function(nsteps, fn, children=children, shape=shape, dtype=dtype, other_args=other_args, arg_reconstructor = reconstruct_args)
         super().__init__(name, make_expression, input_stacks, output_stack, code_blocks, docstring=docstring, validator=validator)
         self.signature = signature
         self.takes_nsteps = True
@@ -156,6 +176,9 @@ class ParamInstruction(Instruction):
     def required_stacks(self) -> Set[str]:
         return {self.output_stack}
     
+    def copy(self) -> Instruction:
+        return ParamInstruction(self.name, self.shape.copy(), self.dtype, self.output_stack, self.docstring)
+    
 class ParamBuilderInstruction(Instruction):
     """Builds and pushes a symbolic Parameter Expression representing one of the parameters of the neural network. 
     Uses elements from the integer stack to fill in None values in the given shape."""
@@ -173,6 +196,7 @@ class ParamBuilderInstruction(Instruction):
     
     def evaluate(self, state:PushState) -> PushState:
         args = state.observe(self.input_stacks)
+        
         if args is None:
             return state 
 
@@ -187,10 +211,14 @@ class ParamBuilderInstruction(Instruction):
 
         input = Parameter(state.nsteps, len(state.params), shape=shape, dtype=self.dtype)
         state.params.append({"shape": shape, "dtype": self.dtype})
+        state = state.pop_from_stacks(self.input_stacks)
         return state.push_to_stacks({self.output_stack: [input]})
     
     def required_stacks(self) -> Set[str]:
         return {self.output_stack}
+    
+    def copy(self) -> Instruction:
+        return ParamBuilderInstruction(self.name, self.shape.copy(), self.dtype, self.output_stack, self.docstring)
     
 class LiteralInstruction(Instruction):
     "Pushes a literal, such as a float or an integer"
@@ -210,6 +238,6 @@ class CodeBlockClose():
     def __eq__(self, other):
         return isinstance(other,CodeBlockClose) 
     def __str__(self):
-        return "CodeBlockClose()"
+        return "Close()"
     def __repr__(self):
         return str(self)

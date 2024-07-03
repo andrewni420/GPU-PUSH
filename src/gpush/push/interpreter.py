@@ -1,6 +1,7 @@
 from .state import PushState
 from .instruction import Instruction
 from copy import deepcopy
+from .program import Program
 
 class Interpreter():
     def __init__(self, initial_state: PushState = None, max_steps=None):
@@ -11,11 +12,14 @@ class Interpreter():
     def reset(self):
         self.state = deepcopy(self.initial_state)
 
-    def run(self, program: list, state: PushState = None, max_steps=None, out_stacks=None):
+    def reverse(self, program: Program):
+        return [(self.reverse(p) if isinstance(p,list) else p) for p in program][::-1]
+
+    def run(self, program: Program, state: PushState = None, max_steps=None, out_stacks=None):
         self.state = state or self.state 
         self.max_steps = max_steps or self.max_steps
 
-        state["exec"].extend(program[::-1])
+        state["exec"].extend(self.reverse(program))
         while len(state["exec"])>0 and self.state.nsteps<self.max_steps:
             self.step(state)
         return self.state if out_stacks is None else self.state.observe(out_stacks)

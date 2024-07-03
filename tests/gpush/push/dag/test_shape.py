@@ -283,7 +283,11 @@ def test_conv_2d(shape1, shape2, stride, padding, lhs, rhs):
     arr2 = jnp.zeros(shape2)
     arr = lax.conv_general_dilated(arr1, arr2, stride, padding, lhs_dilation=lhs, rhs_dilation=rhs)
     s = shape.conv(s1, s2, stride=stride, padding=padding, lhs_dilation=lhs, rhs_dilation=rhs)
-    assert arr.shape==tuple(s)
+    actual_shape = arr.shape if all([i>0 for i in arr.shape]) else None 
+    if actual_shape is None:
+        assert actual_shape==s 
+    else:
+        assert actual_shape==tuple(s)
 
 @pytest.mark.parametrize("shape1,shape2", [((2,3,10,10,10),(4,3,3,3,3)), ((4,5,10),(4,5,1)),
                                            ((2,3,5,6,7),(4,3,3,2,4)), ((2,3,5),(4,3,1))])
@@ -304,21 +308,30 @@ def test_conv_nd(shape1, shape2, stride, padding, lhs, rhs):
     arr2 = jnp.zeros(shape2)
     arr = lax.conv_general_dilated(arr1, arr2, stride, padding, lhs_dilation=lhs, rhs_dilation=rhs)
     s = shape.conv(shape1, shape2, stride=stride, padding=padding, lhs_dilation=lhs, rhs_dilation=rhs)
-    assert arr.shape==tuple(s)
+    actual_shape = arr.shape if all([i>0 for i in arr.shape]) else None 
+    if actual_shape is None:
+        assert actual_shape==s 
+    else:
+        assert actual_shape==tuple(s)
 
-@pytest.mark.parametrize("shape1,shape2,res", [((SizePlaceholder(),3,10,10),(4,3,3,3), (SizePlaceholder(),4,8,8)),
-                                               ((2,3,10,10),(SizePlaceholder(),3,3,3), (2,SizePlaceholder(),8,8)),
-                                               ((2,3,SizePlaceholder(),10),(4,3,3,3), (2,4,SizePlaceholder(),8)),
-                                               ((2,3,SizePlaceholder(),10),(4,3,SizePlaceholder(),3), (2,4,SizePlaceholder(),8))])
-def test_conv_placeholder(shape1, shape2,res):
+@pytest.mark.parametrize("padding",["SAME",["SAME"],[(0,0)]])
+@pytest.mark.parametrize("shape1,shape2,res1,res2", [((SizePlaceholder(),3,10,10),(4,3,3,3), (SizePlaceholder(),4,8,8),(SizePlaceholder(),4,10,10)),
+                                               ((2,3,10,10),(SizePlaceholder(),3,3,3), (2,SizePlaceholder(),8,8),(2,SizePlaceholder(),10,10)),
+                                               ((2,3,SizePlaceholder(),10),(4,3,3,3), None, (2,4,SizePlaceholder(),10)),
+                                               ((2,3,10,10),(4,3,3,SizePlaceholder()), None,(2,4,10,SizePlaceholder()))])
+def test_conv_placeholder(padding, shape1, shape2, res1, res2):
     n = len(shape1)
     s1 = Shape(*shape1)
     s2 = Shape(*shape2)
     lhs = rhs = stride = (1,)*(n-2)
-    padding = ((0,0),)*(n-2)
+    if isinstance(padding,list):
+        padding = padding*(n-2)
+    res = res2 if (padding=="SAME" or (isinstance(padding, list) and padding[0]=="SAME")) else res1
     s = shape.conv(s1, s2, stride=stride, padding=padding, lhs_dilation=lhs, rhs_dilation=rhs)
-    for s_,r_ in zip(s,res):
-        assert type(s_)==type(r_)
-    assert s==res 
-
+    if res is None:
+        assert s==res
+    else:
+        for s_,r_ in zip(s,res):
+            assert type(s_)==type(r_)
+        assert s==res
 

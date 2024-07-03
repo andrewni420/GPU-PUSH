@@ -31,7 +31,8 @@ def test_creator(default, update):
 @pytest.mark.parametrize("limiter", [None, lambda x:x+1, lambda x:2*x,lambda x:min(max(x,0),1), SizeLimiter(low=-2,high=5)])
 @pytest.mark.parametrize("signature", [None, lambda x:(1,1), lambda x:(2,2)])
 def test_create_instr(limiter, signature):
-    input_stacks = output_stacks = "int"
+    input_stacks = "int"
+    output_stacks = "int"
     def instr(x):
         return x+1
     l = limiter 
@@ -40,11 +41,11 @@ def test_create_instr(limiter, signature):
     instructions = create_instructions(instr,input_stacks=input_stacks, output_stacks=output_stacks,limiter=l, signature=signature)
     inputs = [-10,-3, -1, -0.5, 0, 0.5, 1, 3, 10]
     if signature:
-        names = ["instr_eager", "instr_graph"]
-        names+= ["instr_eager_limit", "instr_graph_limit"] if limiter else []
+        names = ["instr", "instr_graph"]
+        names+= ["instr_limit", "instr_graph_limit"] if limiter else []
     else:
-        names = ["instr_eager"]
-        names+= ["instr_eager_limit"] if limiter else []
+        names = ["instr"]
+        names+= ["instr_limit"] if limiter else []
     assert [i.name for i in instructions]==names 
 
     def output_test(f,input):

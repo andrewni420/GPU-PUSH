@@ -1,15 +1,28 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import List, Callable, Any
+from typing import List, Callable, Any, Union
 from .shape import Shape 
 import numpy as np
 from itertools import chain 
 
+Arguments = Union[tuple,dict]
 
 class Expression(ABC):
-    frozen = False 
     """A generic expression. Forms the basis of the computational graph / directed acyclic graph.
     Possesses two copies of the id for better id updating. These copies should be identical otherwise."""
+    frozen: bool = False 
+    "Whether this expression has been frozen and can no longer be modified"
+    _id: list[int]
+    "An internal list of two ids to help in setting ids. Do not modify."
+    shape: Shape 
+    "The shape of the resultant matrix"
+    children: tuple[Expression] | dict[str,Expression]
+    "The sub-expressions to be fed as arguments into this expression"
+    parents: list[Expression]
+    "The expressions that contain this expression as an argument"
+    dtype: str 
+    "The datatype of the resultant matrix"
+
     def __init__(self, id: int, shape: Shape = Shape(), children: tuple[Expression] | dict[str,Expression] = tuple(), dtype: str = "float"):
         self._id = [id,id] 
         self.shape = shape
@@ -22,6 +35,7 @@ class Expression(ABC):
 
     @property 
     def id(self):
+        "The id of the expression"
         if self._id[0]==self._id[1]:
             return self._id[0]
         else:
@@ -57,7 +71,7 @@ class Expression(ABC):
     
     def map_dfs(self, fn: Callable[[Expression], Any], idx=None ):
         """Uses graph DFS based on the individual's id to apply fn once to every expression in the dag. 
-        Function cannot change the id at the given index, and should not touch the ids in general"""
+        `fn` cannot change the id at the given index, and should not touch the ids in general."""
         explored = set()
         stack = [self]
         while len(stack)>0:
@@ -69,8 +83,9 @@ class Expression(ABC):
                 stack.extend(expr.list_children())
 
     def update_ids(self, fn: Callable[[Expression], Any]):
-        """Uses `map_dfs()` to update the ids in a safe way. `fn` should accept an optional argument `idx` denoting which idx is to be updated.
-        This function should only modify the id at the given index, and should not touch the other index."""
+        """Uses `map_dfs()` to update the ids in a safe way, by updating the left and then the right ids. 
+        \n`fn` should accept an optional argument `idx` denoting which idx is to be updated.
+        \nThis function should only modify the id at the given index, and should not touch the other index."""
         self.map_dfs(lambda x:fn(x,idx=1), idx=0)
         self.map_dfs(lambda x:fn(x,idx=0), idx=1)
 
@@ -86,12 +101,15 @@ class Expression(ABC):
     
     # Propagate shape unboxing functionality upwards
     def is_shape_set(self):
+        "Tests whether all SizePlaceholders in this expression's shape have been set"
         return self.shape.is_set()
     
     def unbox_shape(self):
+        "Unbox this expression's shape"
         self.shape = self.shape.unbox()
     
     def safe_unbox(self):
+        "Unbox, but only if all SizePlaceholders have been set."
         if self.is_shape_set():
             self.unbox_shape()
 
@@ -101,6 +119,7 @@ class Expression(ABC):
         return super().__setattr__(name, value)
     
     def freeze(self):
+        "Freeze the expression, rendering it immutable"
         if self.frozen:
             return 
         self.parents = tuple(self.parents)
@@ -111,6 +130,7 @@ class Expression(ABC):
 
     @abstractmethod
     def eval(self, params, input, cache):
+        "Evaluate this expression based on parameters, inputs, and a cache containing the values of other expressions"
         pass 
 
 class Parameter(Expression):
@@ -120,6 +140,7 @@ class Parameter(Expression):
         self.param_idx = param_idx 
 
     def eval(self, params, input, cache):
+        "Returns the parameter at `self.param_idx`"
         return params[self.param_idx]
     
 class Input(Expression):
@@ -129,16 +150,44 @@ class Input(Expression):
         self.input_idx = input_idx 
     
     def eval(self, params, input, cache):
+        "Returns the input at `self.input_idx`"
         return input[self.input_idx]
     
+def default_arg_reconstructor(children: Arguments, other_args: Arguments) -> Arguments:
+    if other_args is None:
+        return children 
+    if isinstance(children,tuple):
+        return children+other_args
+    else:
+        return dict(**children,**other_args)
+
 class Function(Expression):
     """Takes in some number of inputs and returns and output. fn is a pure jax function that takes matrices and returns a matrix.
     Need to specify the returned shape and dtype"""
-    def __init__(self, id, fn: Callable, children: tuple[Expression] | dict[str,Expression] = tuple(), shape: Shape = Shape(), dtype: str = "float"):
+
+    fn: Callable 
+    "The function represented by this expression"
+    other_args: Union[tuple,dict]
+    "Other, non-children arguments of the function"
+    arg_reconstructor: Callable
+    """A function to take the evaluated children along with the other arguments, and reconstruct the 
+    original argument order to use for calling `fn`.
+    If not specified, defaults to concatenating tuples and merging dictionaries."""
+    
+    def __init__(self, 
+                 id: int, 
+                 fn: Callable, 
+                 children: tuple[Expression] | dict[str,Expression] = tuple(), 
+                 shape: Shape = Shape(), 
+                 dtype: str = "float",
+                 other_args: Arguments = None,
+                 arg_reconstructor: Callable[[Arguments, Arguments], Arguments] =None):
         super().__init__(id, shape=shape, children=children, dtype=dtype)
         self.fn = fn 
+        self.other_args = other_args 
+        self.arg_reconstructor = arg_reconstructor
 
-    def collect_inputs(self, cache):
+    def collect_inputs(self, cache: list) -> Arguments:
         """Collect the cached arguments to this expression's function, in the same shape as `self.children`.
         \nIf any arguments are unavailable, returns `None`"""
         if isinstance(self.children, tuple):
@@ -158,11 +207,13 @@ class Function(Expression):
             inputs[k] = input 
         return inputs 
     
-    def eval(self, params, input, cache):
+    def eval(self, params: list, input: list, cache: list):
         """Evaluates the function based on the cached values of its children. If not all children were evaluated, returns None"""
         inputs = self.collect_inputs(cache)
         if inputs is None:
             return None 
+        reconstructor = default_arg_reconstructor if self.arg_reconstructor is None else self.arg_reconstructor
+        inputs = inputs if self.other_args is None else reconstructor(inputs,self.other_args)
         if isinstance(self.children,tuple):
             return self.fn(*inputs)
         return self.fn(**inputs)

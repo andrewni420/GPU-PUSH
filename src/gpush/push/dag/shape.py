@@ -1,11 +1,17 @@
 from __future__ import annotations
-from typing import List
+from typing import List, Union 
 from dataclasses import dataclass
 from copy import deepcopy
 
 def broadcast(*shapes: Shape):
-    """Tests whether the given shapes can be broadcasted together following the numpy broadcasting rules.
-    \nReturns the final broadcasted shape if possible, or None if impossible"""
+    """Computes the resultant shape from broadcasting together the two given shapes, following the same rules as numpy. 
+    Returns `None` if the shapes are not compatible
+    
+    Parameters:
+        shapes (Shape): The shapes to be broadcasted together
+        
+    Returns:
+        Shape: The resultant shape, or `None` if the operation cannot be performed. """
     final_shape = []
     maxdim = max([len(s) for s in shapes])
 
@@ -44,9 +50,15 @@ def broadcast(*shapes: Shape):
     return Shape(*(final_shape[::-1]))
 
 def mmul(shape1: Shape, shape2: Shape):
-    """Computes the resultant shape of matrix multiplying the two given shapes. 
-    \nFollows same rules as `np.matmul`. 
-    \nReturns `None` if the shapes are not compatible"""
+    """Computes the resultant shape from matrix multiplying the two given shapes, following the same rules as `np.matmul`. 
+    Returns `None` if the shapes are not compatible
+    
+    Parameters:
+        shape1 (Shape): The first shape 
+        shape2 (Shape): The second shape 
+        
+    Returns:
+        Shape: The resultant shape, or `None` if the operation cannot be performed."""
     if len(shape1)==0 or len(shape2)==0:
         raise ValueError(f"Input operand does not have enough dimensions: shape1 {shape1} shape2 {shape2}")
     
@@ -85,44 +97,79 @@ def conv(shape1: Shape,
          padding: str | List[tuple[int,int]] = None, 
          lhs_dilation: List[int] = None, 
          rhs_dilation: List[int] = None) -> Shape:
-    #Batch In_Channels Height Width
+    """Computes the resultant shape of a general convolution operation between matrices of the input shapes.
+    
+    Parameters:
+        shape1 (Shape): The first input shape of the form (NCHW...)
+        shape2 (Shape): The second input shape of the form (OIHW...)
+        stride (list[int]): The stride length in each spatial dimension. 1 by default
+        padding (list[tuple[int,int]]): The left/right padding along each spatial dimension. 0 by default
+        lhs_dilation (list[int]): The dilation factor of `shape1` along each spatial dimension. 1 by default
+        rhs_dilation (list[int]): The dilation factor of `shape2` along each spatial dimension. 1 by default.
+        
+    Returns:
+        Shape: The shape of the resultant matrix (NCHW...), or `None` if a convolution with the given parameters can't be performed. 
+        Convolutional operations which result in size-0 axes are considered invalid."""
+    #Batch_Size In_Channels Height Width
     #Out_Channels In_Channels Channels Height Width
-    #Batch Out_Channels Height Width
+    #Batch_Size Out_Channels Height Width
     if len(shape1)!=len(shape2):
         return None 
     n = len(shape1)
     if n<2:
         return None 
-    if shape1[1]!=shape2[1]:
+    # Do the number of channels match?
+    if SizePlaceholder.is_set_size(shape1[1]) and SizePlaceholder.is_set_size(shape2[1]) and shape1[1]!=shape2[1]:
         return None 
     
+    allow_spatial_placeholders = (padding=="SAME" or (isinstance(padding,list) and all([p=="SAME" for p in padding]))) 
+
+    # All spatial dimensions need to be specified, unless padding is "SAME". Otherwise we'd need to do some fancy arithmetic
+    if not allow_spatial_placeholders:
+        for i in range(2,n):
+            if not (SizePlaceholder.is_set_size(shape1[i]) and SizePlaceholder.is_set_size(shape2[i])):
+                return None 
+    
+    # Compute the final size along each spatial dimension
     def spatial_size(size: int, kernel: int, stride: int, padding: str | tuple[int,int], lhs: int, rhs: int) -> int:
         if padding=="SAME":
+            # Pad with enough zeros so that all windows fit fully into padded area, same as jax, xla, or tensorflow (https://github.com/openxla/xla/blob/main/xla/client/padding.cc#L54)
             out_shape = -(size//-stride)
             pad_size = max(0,(out_shape-1)*stride+kernel-size)
             padding = (pad_size//2,pad_size-pad_size//2)
         return max(0,(size-kernel+(lhs-1)*(size-1)-(rhs-1)*(kernel-1)+padding[0]+padding[1])//stride+1)
     
+    # Turn parameters into defaults / correct format
     def make_default(x, default, length):
-        if x is None or len(x)==0:
-            return [default]*length
         if isinstance(x,int):
             return [x]*length
-        return x 
+        elif x is None or len(x)==0:
+            return [default]*length
+        else:
+            return x 
     
     if padding=="SAME":
         padding = [padding]*(n-2)
-    if padding is None or len(padding)==0:
+    elif isinstance(padding,int):
+        padding = [(padding,padding)]*(n-2)
+    elif padding is None or len(padding)==0:
         padding = [(0,0)]*(n-2)
-    if isinstance(padding[0],int):
+    elif isinstance(padding[0],int):
         padding = [padding for _ in range(n-2)]
     stride,lhs_dilation,rhs_dilation = [make_default(x,1,n-2) for x in [stride, lhs_dilation, rhs_dilation]]
 
+    # Compute result (NCHW...)
     ret = Shape(shape1[0], shape2[0])+Shape(*map(spatial_size, shape1[2:], shape2[2:], stride, padding, lhs_dilation, rhs_dilation))
-    # print(tuple(ret))
+
+    # If any spatial dimension is 0, then this operation is impossible.
+    for i in ret[2:]:
+        if i==0:
+            return None 
     return ret
 
 def make_placeholder_arithmetic(func):
+    """Make arithmetic operations return an unset `SizePlaceholder` if either argument is unset. 
+    Also make operations safe for integer arguments"""
     def wrapper(self, other: int | SizePlaceholder):
         if self.is_set():
             other_val = other if isinstance(other, int) else other.value 
@@ -132,12 +179,22 @@ def make_placeholder_arithmetic(func):
     return wrapper
 
 class SizePlaceholder():
+    """An undetermined value with limited symbolic functionalities. Can be linked or set equal to other
+    undetermined values, such that when one `SizePlaceholder`'s value is determined, all linked placeholders
+    will be set to the same value."""
+
+    _value: int 
+    "The value of the placeholder, or `None` if unset. Do not modify."
+    links: list[SizePlaceholder]
+    "The linked placeholders, all of which have equal values"
+
     def __init__(self):
         self._value = None 
         self.links = []
 
     @property
     def value(self):
+        "The value of the placeholder."
         return self._value 
 
     @value.setter
@@ -152,9 +209,15 @@ class SizePlaceholder():
                 raise ValueError("Trying to set an already existing value")
         
     def is_set(self):
+        "Has this placeholder's value been set?"
         return self.value is not None 
     
     def link(self, *others: int|SizePlaceholder):
+        """Symbolically set equal to other placeholders. If one of the other placeholders already has a set value, 
+        all of the placeholders will take on that value. 
+        
+        Raises:
+            ValueError: If two placeholders have already been set to different values"""
         literals = [o for o in others if isinstance(o,int)]
         placeholders = [o for o in others if isinstance(o,SizePlaceholder)]
         
@@ -176,22 +239,37 @@ class SizePlaceholder():
                 if o.is_set():
                     self.value = o.value  
 
+    def copy(self) -> SizePlaceholder:
+        """Return a new `SizePlaceholder` with the same value and linked placeholders. 
+        Deep-ish copy in that linked placeholders are not recursively copied."""
+        placeholder = SizePlaceholder()
+        placeholder._value = self._value
+        placeholder.links = [l for l in self.links]
+        return placeholder
+
     @staticmethod
-    def link_sizes(*sizes: SizePlaceholder):
+    def link_sizes(*sizes: Union[int,SizePlaceholder]):
+        "Same as `SizePlaceholder.link()` but doesn't require a `SizePlaceholder` object"
         for i,s in enumerate(sizes):
             if isinstance(s,SizePlaceholder):
-                s.link(sizes[:i]+sizes[i+1:])
+                s.link(*(sizes[:i]+sizes[i+1:]))
                 return 
         if len(set(sizes))>1:
             raise ValueError("Attempting to link contradictory values")
         
     @staticmethod
-    def is_set_size(other):
+    def is_set_size(other: Union[int,SizePlaceholder]):
+        "Same as `SizePlaceholder.is_set()` but doesn't require a `SizePlaceholder` object"
         if isinstance(other,int):
             return True
         return other.is_set()
         
-
+    def __neg__(self):
+        if self.is_set():
+            return -self.value 
+        else:
+            return SizePlaceholder()
+        
     @make_placeholder_arithmetic
     def __add__(self, other: int | SizePlaceholder):
         return self+other
@@ -361,5 +439,9 @@ class Shape(tuple):
             if isinstance(s,SizePlaceholder):
                 s.link(o)
         return self 
+    
+    def copy(self) -> Shape:
+        "Deep-ish copy of the Shape, copying all SizePlaceholders but not recursively copying linked placeholders."
+        return Shape(*[(s.copy() if isinstance(s,SizePlaceholder) else s) for s in self])
 
 
