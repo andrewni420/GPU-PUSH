@@ -1,4 +1,4 @@
-from ..instruction import SimpleInstruction, SimpleExprInstruction
+from ..instruction import SimpleInstruction, SimpleExprInstruction, StateToStateInstruction
 from ..limiter import Limiter 
 from typing import Callable, Union 
 from abc import ABC, abstractmethod
@@ -109,11 +109,29 @@ def simple_instruction(fn: Callable,
                        **kwargs):
     base_name = base_name or fn.__name__
     base_name = base_name if name_creator is None else name_creator(base_name)
+    output_stacks = input_stacks if output_stacks is None else output_stacks
     if len([k for k in kwargs if kwargs[k] is not None])>0:
        warn(f"simple_instruction {base_name} ignoring additional kwargs: {[k for k in kwargs if kwargs[k] is not None]}")
     if limiter is not None:
         fn = limiter.limit(fn)
     return [SimpleInstruction(base_name,fn,input_stacks,output_stacks,code_blocks,docstring=docstring, validator=validator)]
+
+def state_to_state_instruction(fn: Callable, 
+                       name_creator: Callable[[str],str] = None, 
+                       base_name: str = None, 
+                       stacks_used: Stacks = None, 
+                       code_blocks: int = 0, 
+                       docstring: str = None, 
+                       validator: Callable = None, 
+                       limiter: Limiter = None, 
+                       **kwargs):
+    base_name = base_name or fn.__name__
+    base_name = base_name if name_creator is None else name_creator(base_name)
+    if len([k for k in kwargs if kwargs[k] is not None])>0:
+       warn(f"state_to_state_instruction {base_name} ignoring additional kwargs: {[k for k in kwargs if kwargs[k] is not None]}")
+    if limiter is not None:
+        fn = limiter.limit(fn)
+    return [StateToStateInstruction(base_name,fn,stacks_used,code_blocks,docstring=docstring, validator=validator)]
 
 def process_name_input(input: Union[str,tuple[str],dict[str,int]]):
     if isinstance(input,tuple):

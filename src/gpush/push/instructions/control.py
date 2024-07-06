@@ -32,6 +32,11 @@ def dup(**kwargs):
 def swap(**kwargs):
     return {k:v[::-1] for k,v in kwargs.items()}
 
+@GLOBAL_INSTRUCTIONS.unpack_register(polymorphic_instruction)
+@wrap(input_stacks=[{s:3} for s in data_stacks])
+def rot(**kwargs):
+    return {k:v[-1:]+v[:-1] for k,v in kwargs.items()}
+
 # def dup_times_name_creator(name, input, output):
 #     input = input[0] if isinstance(input,tuple) else next(iter(input))
 #     graph="_graph" if ("expr" in input or "expr" in output) else ""

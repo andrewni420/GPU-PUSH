@@ -1,4 +1,4 @@
-from gpush.push.dag.expr import Function, Parameter, Input
+from gpush.push.dag.expr import Function, Parameter, Input, ParamUpdate
 import gpush.push.dag.expr as expr 
 from gpush.push.dag.shape import Shape 
 
@@ -143,4 +143,3 @@ def test_initial_eval():
             assert f.eval(params,input, cache)==(tuple(), dict())
         else:
             assert f.eval(params,input, cache) is None
-

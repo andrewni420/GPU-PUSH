@@ -69,3 +69,13 @@ def int_to_float(x):
 def float_to_int(x):
     return int(x)
 
+@GLOBAL_INSTRUCTIONS.unpack_register()
+@float_wrap(input_stacks = "float")
+def float_cos(x):
+    return float(jnp.cos(x))
+
+@GLOBAL_INSTRUCTIONS.unpack_register()
+@float_wrap(input_stacks = "float")
+def float_sin(x):
+    return float(jnp.sin(x))
+

@@ -1,12 +1,17 @@
 from gpush.push.instructions.arithmetic import *
 from gpush.push.instruction import *
+from gpush.push.instruction_set import GLOBAL_INSTRUCTIONS
 from gpush.push.state import PushState
 from gpush.push.dag.dag import Dag
 from gpush.push.instructions.utils import WrapperCreator, create_instructions
 from gpush.push.limiter import LambdaLimiter,SizeLimiter
-from copy import copy 
+from copy import copy,deepcopy
 import pytest
+import jax.numpy as jnp 
 
+def assert_eval_result(init_state: PushState, instr: str, final_state: PushState):
+    instruction = GLOBAL_INSTRUCTIONS[instr]
+    assert instruction(deepcopy(init_state))==final_state
 
 @pytest.mark.parametrize("default", [{"hi":1,"bye":3,"adios":2}, {"bar":[1,2,3],"zero":(1,2),"foo":"bar"}])
 @pytest.mark.parametrize("update", [{"hi":1,"asvab":2}, {"bar":[1,2,3],"one":4}, {"adios":0,"bar":-1,"foo":"foo"}])
@@ -63,6 +68,8 @@ def test_create_instr(limiter, signature):
     for f in instructions:
         for i in inputs:
             output_test(f,i)
+
+
 
 
 

@@ -4,6 +4,10 @@ from typing import List, Callable, Any, Union
 from .shape import Shape 
 import numpy as np
 from itertools import chain 
+from jax import Array
+from functools import partial
+import numpy as np
+import re 
 
 Arguments = Union[tuple,dict]
 
@@ -128,30 +132,66 @@ class Expression(ABC):
         for c in self.list_children():
             c.freeze()
 
+    def hidden_params(self):
+        "Returns a list of the param indices which are hidden states, and are assigned values during execution"
+        return list(self.gather(lambda x:x.param_idx if isinstance(x,ParamUpdate) else None, partial(filter,lambda x:x)))
+
+
     @abstractmethod
-    def eval(self, params, input, cache):
-        "Evaluate this expression based on parameters, inputs, and a cache containing the values of other expressions"
+    def eval(self, params: list[Array], input: list[Array], cache: list[Array]) -> tuple[Array,list[Array]]:
+        "Evaluate this expression based on parameters, inputs, and a cache containing the values of other expressions. Returns the output and the updated params"
         pass 
+
+    def __str__(self):
+        children = tuple(c.id for c in self.children) if isinstance(self.children,tuple) else {k:[c.id for c in v] for k,v in self.children.items()}
+        return f"Expression({self.id}, {self.shape}, {self.dtype}, children={children})"
+    def __repr__(self):
+        return str(self)
 
 class Parameter(Expression):
     """Returns the parameter at index `index`. Need to specify the shape and dtype of that parameter"""
+    param_idx: int 
+    "The index of the parameter referenced by this expression"
     def __init__(self, id: int, param_idx: int = 0, shape: Shape = Shape(), dtype: str = "float"):
         super().__init__(id, shape=shape, dtype=dtype)
         self.param_idx = param_idx 
 
-    def eval(self, params, input, cache):
+    def eval(self, params: list[Array], input: list[Array], cache: list[Array]) -> tuple[Array,list[Array]]:
         "Returns the parameter at `self.param_idx`"
-        return params[self.param_idx]
+        # print(f"{self}\n\t inputs {params[self.param_idx].shape} self {self.shape}")
+        return params[self.param_idx], params
+    def __str__(self):
+        return f"Parameter({self.id}, {self.param_idx}, {self.shape}, {self.dtype})"
     
 class Input(Expression):
     """Returns the input at index `index`. Need to specify the shape and dtype of that input"""
+    input_idx: int 
+    "The index of the input referenced by this expression"
     def __init__(self, id: int, input_idx: int = 0, shape: Shape = Shape(), dtype: str = "float"):
         super().__init__(id, shape=shape, dtype=dtype)
         self.input_idx = input_idx 
     
-    def eval(self, params, input, cache):
+    def eval(self, params: list[Array], input: list[Array], cache: list[Array]) -> tuple[Array,list[Array]]:
         "Returns the input at `self.input_idx`"
-        return input[self.input_idx]
+        # print(f"{self}\n\t inputs {input[self.input_idx].shape} self {self.shape}")
+        return input[self.input_idx], params
+    def __str__(self):
+        return f"Input({self.id}, {self.input_idx}, {self.shape}, {self.dtype})"
+    
+class Literal(Expression):
+    """Returns a literal value"""
+    value: Array 
+    "The value returned by this expression"
+    def __init__(self, id: int, val: Array):
+        super().__init__(id, shape=val.shape, dtype=re.search("[a-zA-Z]+",str(val.dtype))[0])
+        self.value=val 
+
+    def eval(self, params: list[Array], input: list[Array], cache: list[Array]) -> tuple[Array,list[Array]]:
+        "Returns the expression's literal value"
+        # print(f"{self}\n\t inputs {params[self.param_idx].shape} self {self.shape}")
+        return self.value, params
+    def __str__(self):
+        return f"Literal({self.id}, {self.param_idx}, {self.shape}, {self.dtype})"
     
 def default_arg_reconstructor(children: Arguments, other_args: Arguments) -> Arguments:
     if other_args is None:
@@ -181,7 +221,8 @@ class Function(Expression):
                  shape: Shape = Shape(), 
                  dtype: str = "float",
                  other_args: Arguments = None,
-                 arg_reconstructor: Callable[[Arguments, Arguments], Arguments] =None):
+                 arg_reconstructor: Callable[[Arguments, Arguments], Arguments] =None,
+                 hidden_state: bool = False):
         super().__init__(id, shape=shape, children=children, dtype=dtype)
         self.fn = fn 
         self.other_args = other_args 
@@ -207,19 +248,48 @@ class Function(Expression):
             inputs[k] = input 
         return inputs 
     
-    def eval(self, params: list, input: list, cache: list):
+    def eval(self, params: list[Array], input: list[Array], cache: list[Array]) -> tuple[Array,list[Array]]:
         """Evaluates the function based on the cached values of its children. If not all children were evaluated, returns None"""
         inputs = self.collect_inputs(cache)
         if inputs is None:
             return None 
         reconstructor = default_arg_reconstructor if self.arg_reconstructor is None else self.arg_reconstructor
         inputs = inputs if self.other_args is None else reconstructor(inputs,self.other_args)
+        # input_shapes = tuple(c.shape for c in inputs) if (isinstance(inputs,tuple) or isinstance(inputs,list)) else {k:[c.shape for c in v] for k,v in inputs.items()}
+        # print(f"{self}\n\t inputs {input_shapes} self {self.shape}")
         if isinstance(self.children,tuple):
-            return self.fn(*inputs)
-        return self.fn(**inputs)
-    
+            output = self.fn(*inputs)
+        else:
+            output = self.fn(**inputs)
 
+        
+        return output, params
+    def __str__(self):
+        children = tuple(c.id for c in self.children) if isinstance(self.children,tuple) else {k:[c.id for c in v] for k,v in self.children.items()}
+        return f"Function({self.id}, {self.shape}, {self.dtype}, children={children})"
 
+class ParamUpdate(Function):
+    """Updates a parameter at index 'param_idx' using the value at 'id' in the cache."""
 
+    def __init__(self, id: int, children: Union[dict[str,Expression],tuple[Expression]], param_idx: int = 0, shape: Shape = Shape(), dtype: str = "float"):
+        super().__init__(id, lambda x:x, shape=shape, children=children, dtype=dtype)
+        self.param_idx = param_idx
+        self.children = children
+        if len(children)!=1:
+            raise ValueError("ParamUpdate takes exactly one child")
+
+    def eval(self, params: list[Array], input: list[Array], cache: list[Array]) -> tuple[Array,list[Array]]:
+        """Updates the parameter at self.param_idx using the value from the cache."""
+        inputs = self.collect_inputs(cache)
+        if inputs is None:
+            return None 
+        cached_value = inputs[0]
+
+        # Update the parameter at self.param_idx using the cached value
+        params = params[:]
+        params[self.param_idx] = cached_value
+        return cached_value, params
+    def __str__(self):
+        return f"ParamUpdate({self.id}, {self.param_idx}, {self.shape}, {self.dtype}, children={[c.id for c in self.children]})"
 
     

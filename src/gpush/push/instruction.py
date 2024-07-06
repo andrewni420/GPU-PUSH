@@ -2,9 +2,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod 
 from typing import Callable, Set, Union
 from .state import PushState
-from .dag.expr import Function, Parameter, Input
+from .dag.expr import Function, Parameter, Input, Literal
 from .dag.shape import Shape 
 import numpy as np  
+from jax import Array
 
 class Instruction(ABC):
     def __init__(self, name: str, code_blocks: int, docstring = None):
@@ -16,6 +17,7 @@ class Instruction(ABC):
         return self.name==other.name 
     
     def __call__(self, state: PushState) -> PushState:
+        "Evaluates the instruction on the state and increments state.nsteps"
         return self.evaluate(state).step()
     
     def __str__(self):
@@ -26,6 +28,7 @@ class Instruction(ABC):
     
     @abstractmethod 
     def evaluate(self, state: PushState) -> PushState:
+        "Evaluates the instruction on the state without incrementing state.nsteps"
         pass 
 
     @abstractmethod
@@ -153,8 +156,8 @@ class InputInstruction(Instruction):
         self.input_idx = input_idx 
         self.output_stack = output_stack
     
-    def evaluate(self, state:PushState, nsteps: int = 0) -> PushState:
-        input = Input(nsteps, self.input_idx, shape=state.input[self.input_idx]["shape"], dtype=state.input[self.input_idx]["dtype"])
+    def evaluate(self, state:PushState) -> PushState:
+        input = Input(state.nsteps, self.input_idx, shape=state.input[self.input_idx]["shape"], dtype=state.input[self.input_idx]["dtype"])
         return state.push_to_stacks({self.output_stack: [input]})
     
     def required_stacks(self) -> Set[str]:
@@ -179,6 +182,20 @@ class ParamInstruction(Instruction):
     def copy(self) -> Instruction:
         return ParamInstruction(self.name, self.shape.copy(), self.dtype, self.output_stack, self.docstring)
     
+class ArrayLiteralInstruction(Instruction):
+    "Pushes a symbolic array literal expression representing a literal array"
+    def __init__(self, name: str, val: Array, output_stack: str, docstring: str = None):
+        super().__init__(name, 0, docstring=docstring)
+        self.value = val
+        self.output_stack = output_stack
+    
+    def evaluate(self, state:PushState) -> PushState:
+        input = Literal(state.nsteps, self.value)
+        return state.push_to_stacks({self.output_stack: [input]})
+    
+    def required_stacks(self) -> Set[str]:
+        return {self.output_stack}
+        
 class ParamBuilderInstruction(Instruction):
     """Builds and pushes a symbolic Parameter Expression representing one of the parameters of the neural network. 
     Uses elements from the integer stack to fill in None values in the given shape."""

@@ -1,7 +1,8 @@
 from ..instruction import SimpleInstruction
 from ..instruction_set import GLOBAL_INSTRUCTIONS, ACTIVATION_INSTRUCTIONS
 from ..state import PushState
-from .utils import WrapperCreator
+from ..dag.expr import Expression, Function, Input, Parameter, ParamUpdate
+from .utils import WrapperCreator,simple_instruction, state_to_state_instruction
 from ..limiter import DEFAULT_SIZE_LIMITER
 from ..signature import broadcast_signature, mmul_signature, cast_signature, conv_signature, pool_signature, flatten_signature
 from ...utils import preprocess
@@ -11,7 +12,7 @@ import jax.nn as nn
 from functools import partial, wraps, update_wrapper
 
 
-
+wrap = WrapperCreator()
 float_jax_wrap = WrapperCreator(input_stacks={"float_jax":2}, output_stacks="float_jax", limiter=DEFAULT_SIZE_LIMITER, signature=broadcast_signature)
 int_jax_wrap = WrapperCreator(input_stacks={"int_jax":2}, output_stacks="int_jax", limiter=DEFAULT_SIZE_LIMITER, signature=broadcast_signature)
 cast_to_float = partial(cast_signature,cast_to="float")
@@ -68,6 +69,22 @@ def float_jax_div(**kwargs):
 def int_jax_div(**kwargs):
     x,y = kwargs["int_jax"]
     return jnp.where(y==0,0,lax.div(x,y))
+
+##############################
+######## 1d Functions ########
+##############################
+
+@GLOBAL_INSTRUCTIONS.unpack_register()
+@activation_wrap()
+def float_jax_cos(**kwargs):
+    [x] = kwargs["float_jax"]
+    return jnp.cos(x)
+
+@GLOBAL_INSTRUCTIONS.unpack_register()
+@activation_wrap()
+def float_jax_sin(**kwargs):
+    [x] = kwargs["float_jax"]
+    return jnp.sin(x)
 
 ##################################
 ######## Binary Functions ########
@@ -196,12 +213,12 @@ def float_jax_tanh(**kwargs):
     [x] = kwargs["float_jax"]
     return nn.tanh(x)
 
-@ACTIVATION_INSTRUCTIONS.unpack_register()
-@GLOBAL_INSTRUCTIONS.unpack_register()
-@float_jax_wrap(signature=cast_to_float)
-def float_jax_glu(**kwargs):
-    [x] = kwargs["float_jax"]
-    return nn.glu(x)
+# @ACTIVATION_INSTRUCTIONS.unpack_register()
+# @GLOBAL_INSTRUCTIONS.unpack_register()
+# @float_jax_wrap(signature=cast_to_float)
+# def float_jax_glu(**kwargs):
+#     [x] = kwargs["float_jax"]
+#     return nn.glu(x)
 
 @ACTIVATION_INSTRUCTIONS.unpack_register()
 @GLOBAL_INSTRUCTIONS.unpack_register()
@@ -253,7 +270,7 @@ def float_jax_sum_pool_vanilla(dimensions=None, **kwargs):
 #####################################
 
 @GLOBAL_INSTRUCTIONS.unpack_register()
-@float_jax_wrap(input_stacks = {"float_jax":1}, signature=flatten_signature)
+@float_jax_wrap(input_stacks = {"float_jax":1}, signature=flatten_signature, limiter=None)
 def float_jax_flatten_vanilla(**kwargs):
     "Default flattening operation that completely flattens the array. Assumes no batch dimension."
     [x] = kwargs["float_jax"]
@@ -266,10 +283,93 @@ def flatten_preprocessor(*args, **kwargs):
     return args,kwargs
 
 @GLOBAL_INSTRUCTIONS.unpack_register()
-@float_jax_wrap(input_stacks = {"float_jax":1, "int":1}, signature=flatten_signature)
+@float_jax_wrap(input_stacks = {"float_jax":1, "int":1}, signature=flatten_signature, limiter=None)
 @partial(preprocess,flatten_preprocessor)
 def float_jax_flatten(ndim = 1,**kwargs):
     "Flattens into an ndim-dimensional array by coalescing all further dimensions into the ndim'th dimension"
     [x] = kwargs["float_jax"]
     return lax.reshape(x,x.shape[:ndim-1]+[-1])
+
+###############################
+######## RNN Functions ########
+###############################
+
+def param_update_validator(stack,state: PushState) -> bool:
+    """Checks whether we can use x/y to update the value of the parameter x/y. 
+    One of the arguments needs to be a parameter, and the other needs to not be a parameter.
+    The arguments must have the same datatype and shape."""
+    args = state.observe({stack:2})
+    if args is None:
+        return False 
+    x,y = args[stack]
+    if not (isinstance(x,Parameter) or isinstance(y,Parameter)):
+        return False 
+    if isinstance(x,Parameter) and isinstance(y,Parameter):
+        return False
+    if x.dtype!=y.dtype:
+        return False 
+    if x.shape!=y.shape:
+        return False 
+    return True 
+    
+@GLOBAL_INSTRUCTIONS.unpack_register(fn=state_to_state_instruction)
+@wrap(stacks_used = {"float_jax_expr"}, validator=partial(param_update_validator, "float_jax_expr"))
+def float_jax_param_update(state: PushState):
+    args = state.observe({"float_jax_expr":2})
+    if args is None:
+        return state 
+    x,y = args["float_jax_expr"]
+    if isinstance(x,Parameter):
+        res = ParamUpdate(state.nsteps, (y,), param_idx=x.param_idx,shape=x.shape,dtype=x.dtype)
+    if isinstance(y,Parameter):
+        res = ParamUpdate(state.nsteps, (x,), param_idx=y.param_idx,shape=y.shape,dtype=y.dtype)
+    state = state.pop_from_stacks({"float_jax_expr":2})
+    return state.push_to_stacks({"float_jax_expr":[res]})
+
+@GLOBAL_INSTRUCTIONS.unpack_register(fn=state_to_state_instruction)
+@wrap(stacks_used = {"int_jax_expr"}, validator=partial(param_update_validator, "int_jax_expr"))
+def int_jax_param_update(state: PushState):
+    args = state.observe({"int_jax_expr":2})
+    if args is None:
+        return state 
+    x,y = args["int_jax_expr"]
+    if isinstance(x,Parameter):
+        res = ParamUpdate(state.nsteps, (y,), param_idx=x.param_idx,shape=x.shape,dtype=x.dtype)
+    if isinstance(y,Parameter):
+        res = ParamUpdate(state.nsteps, (x,), param_idx=y.param_idx,shape=y.shape,dtype=y.dtype)
+    state = state.pop_from_stacks({"int_jax_expr":2})
+    return state.push_to_stacks({"int_jax_expr":[res]})
+
+def param_from_index_validator(stack: str, state: PushState):
+    if "int" in stack:
+        dtype = "int"
+    elif "float" in stack:
+        dtype = "float"
+    else:
+        raise ValueError(f"param_from_index_validator cannot parse dtype of stack {stack}")
+    x = state.observe("int")
+    if x is None:
+        return False 
+    if x<0 and abs(x)>len(state.params):
+        return False 
+    if x>=len(state.params):
+        return False 
+    if state.params[x]["dtype"]!=dtype:
+        return False 
+    return True 
+
+@GLOBAL_INSTRUCTIONS.unpack_register(fn=state_to_state_instruction)
+@wrap(stacks_used = {"int", "float_jax_expr"}, validator=partial(param_from_index_validator, "float_jax_expr"))
+def float_jax_param_from_idx(state: PushState):
+    x = state.observe("int")
+    state = state.pop_from_stacks("int")
+    return state.push_to_stacks({"float_jax_expr":[Parameter(state.nsteps,x,**state.params[x])]})
+
+@GLOBAL_INSTRUCTIONS.unpack_register(fn=state_to_state_instruction)
+@wrap(stacks_used = {"int", "int_jax_expr"}, validator=partial(param_from_index_validator, "int_jax_expr"))
+def int_jax_param_from_idx(state: PushState):
+    x = state.observe("int")
+    state = state.pop_from_stacks("int")
+    return state.push_to_stacks({"int_jax_expr":[Parameter(state.nsteps,x,**state.params[x])]})
+
 

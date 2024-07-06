@@ -1,3 +1,4 @@
+from __future__ import annotations
 from typing import List, Union
 import jax.numpy as jnp
 from jax import Array
@@ -44,7 +45,7 @@ class PushState(dict):
         self.nsteps = 0
         return self 
     
-    def observe(self, stacks: Union[dict[str,int], tuple]) -> dict:
+    def observe(self, stacks: Union[dict[str,int], tuple]):
         "Return the top items in the stacks requested. If a tuple if provided, returns the top item from each stack"
         if stacks is None:
             return {}
@@ -65,15 +66,17 @@ class PushState(dict):
                 res[stack] = self[stack][-n:] if n>0 else []
             return res
     
-    def pop_from_stacks(self, stacks:Union[dict[str,int],tuple]):
-        "Remove items from the stacks. If stacks is a tuple, we assume removing one item per stack"
+    def pop_from_stacks(self, stacks:Union[dict[str,int],tuple,str]):
+        "Remove items from the stacks. If stacks is a tuple, we assume removing one item per stack. If it's a string, we remove one item from that stack"
+        if isinstance(stacks,str):
+            stacks = {stacks:1}
         if isinstance(stacks,tuple):
             stacks = {stack:1 for stack in stacks}
         for k,v in stacks.items():
             self[k] = self[k][:-v] if v>0 else self[k]
         return self 
     
-    def push_to_stacks(self, stacks: dict):
+    def push_to_stacks(self, stacks: dict[str,list]) -> PushState:
         "Add items to the stacks"
         for k,v in stacks.items():
             self[k].extend(v)
@@ -121,22 +124,24 @@ class PushState(dict):
     
 STATE_TEMPLATES = {"push": {"exec": [], "int": [], "float": []},
                    "jax": {"exec": [], "int": [], "float": [], "int_jax_expr": [], "float_jax_expr": []},
+                   "graph": {"exec": [], "int": [], "float": [], "int_jax_expr": [], "float_jax_expr": []},
                    "eager": {"exec": [], "int": [], "float": [], "int_jax": [], "float_jax": []}}
 """Various templates to facilitate the creation of new PushStates."""
     
-def make_state(input: list, template: str = None, stacks: dict[str,list] = None, params: list = None) -> PushState:
+def make_state(input: list, template: str = None, stacks: Union[list,dict[str,list]] = None, params: list = None) -> PushState:
     """Utility function for making a PushState
     
     Parameters:
         input (list): A list of specifications of the inputs to the neural network
         template (str): The name of an optional template to start from. 
-            Currently supports `push` (pure push), `jax` (graph computation), and `eager` (eager computation)
-        stacks (dict[str,list]): Overrides to the template, manually specifying additional/modified stacks
+            Currently supports `push` (pure push), `jax`/`graph` (graph computation), and `eager` (eager computation)
+        stacks (Union[list,dict[str,list]]): Overrides to the template, manually specifying additional/modified stacks. If a list is provided, maps each stack to an empty list
     
     Returns:
         PushState: The resulting PushState"""
     
-    state = {} if template is None else template 
+    state = STATE_TEMPLATES[template] if template in STATE_TEMPLATES else {}
+    stacks = stacks if isinstance(stacks,dict) else {k:[] for k in stacks}
     state.update(stacks)
     params = [] if params is None else params
     return PushState(**state).initialize(params, input)

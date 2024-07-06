@@ -1,4 +1,4 @@
-from gpush.gp.train import *
+from gpush.train.optimizers import *
 import pytest
 from dataclasses import dataclass, field
 from typing import Callable

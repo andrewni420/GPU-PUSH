@@ -2,26 +2,37 @@ from gpush.push.interpreter import *
 from gpush.push.instructions.jax import *
 import gpush.push.instructions.control as control
 from gpush.push.instruction_set import GLOBAL_INSTRUCTIONS
-from gpush.push.instruction import InputInstruction, ParamInstruction, ParamBuilderInstruction, LiteralInstruction, CodeBlockClose
+from gpush.push.instruction import InputInstruction, ParamInstruction, ParamBuilderInstruction, LiteralInstruction, CodeBlockClose, ArrayLiteralInstruction
 from gpush.push.compiler import PlushyCompiler
 from gpush.push.state import PushState
 from gpush.push.dag.shape import Shape, SizePlaceholder
 from gpush.push.dag.dag import Dag
+from gpush.train.backpropagation import BackPropagation,TBPTT, BPTT
+from gpush.train.loss import MSELoss,CrossEntropyLoss
 import jax.numpy as jnp
 import jax.random as random 
 import jax 
-from jax import grad, jit
+from jax import grad, jit, vmap
 import pytest 
+from gpush.utils import map_pytree
+import numpy as np 
+
+def pytree_equals(tree1,tree2):
+    "Tests whether two pytrees have equal array entries"
+    success = map_pytree(lambda x:True,tree1)
+    return map_pytree(lambda x,y: jnp.allclose(x,y),tree1,tree2)==success 
 
 def training_loop(fn, grad_fn, params, inputs, targets, n, lr):
     fn, actual_fn = fn 
     grad_fn, actual_grad_fn = grad_fn
     for _ in range(n):
-        dparams = grad_fn(params,[inputs], targets)
+        (loss,aux), dparams = grad_fn(params,[inputs], targets)
+        print(f"iter {_} loss {loss}")
         actual_dparams = actual_grad_fn(params,inputs,targets)
         
-        output = fn(params, [inputs])
+        output,aux_ = fn(params, [inputs])
         assert jnp.allclose(output, actual_fn(params,inputs))
+        assert all([jnp.allclose(a,b) for a,b in zip(aux,aux_)])
         for dp,actual_dp in zip(dparams,actual_dparams):
             assert jnp.allclose(dp,actual_dp)
 
@@ -41,6 +52,7 @@ def actual_linreg():
         return input@w+b 
     return linreg
 
+@pytest.mark.slow
 @pytest.mark.parametrize("program",[linreg_program])
 def test_linreg(program, actual_linreg):
     """Tests whether we can use GPush to do linear regression"""
@@ -49,12 +61,13 @@ def test_linreg(program, actual_linreg):
     program = PlushyCompiler()(program)
     start_state = PushState(float_jax_expr=[], exec=[]).initialize([],[{"shape":Shape(3),"dtype":"float"}])
     final_state = Interpreter().run(program, state=start_state)
+    assert len(final_state["float_jax_expr"])==1
     expr = final_state["float_jax_expr"][0]
     dag = Dag(expr)
     arr1 = jnp.array([[1.],[2.],[3.]])
     arr2 = jnp.array([[1.,2.,3.],[4.,5.,6.],[5.,2.,6.]])
     arr3 = jnp.array(4)
-    output = dag.eval([arr1, arr3],[arr2])
+    output, aux = dag.fn([arr1, arr3],[arr2])
     assert jnp.allclose(output, arr2@arr1+arr3)
 
     # Test learning
@@ -65,16 +78,18 @@ def test_linreg(program, actual_linreg):
     w,b = final_state.init_params(subkeys[1])
 
     # Loss / grad functions
+    backprop = BackPropagation(dag.fn,MSELoss())
     def loss(output, target):
         return jnp.mean((output-target)**2)
-    grad_fn = dag.grad(loss)
-    
-    
     actual_grad = jit(grad(lambda params, input, output: loss(output, actual_linreg(params,input))))
 
+    res, aux = dag.fn([w,b], [inputs])
+    initial_loss = loss(res, targets)
+    assert pytree_equals(aux,[w,b])
+
     # Training loop
-    w,b = training_loop([dag.eval, actual_linreg], 
-                        [grad_fn, actual_grad], 
+    w,b = training_loop([dag.fn, actual_linreg], 
+                        [backprop, actual_grad], 
                         [w,b], 
                         inputs, 
                         targets, 
@@ -82,7 +97,10 @@ def test_linreg(program, actual_linreg):
                         0.1)
     
     # Does training converge to the right values?
-    final_loss = loss(dag.eval([w,b], [inputs]), targets)
+    res, aux = dag.fn([w,b], [inputs])
+    final_loss = loss(res, targets)
+    assert pytree_equals(aux,[w,b])
+    assert final_loss<initial_loss
     assert final_loss<0.001
     assert jnp.allclose(w,jnp.array([[1],[0.2],[-0.5]]))
     assert jnp.allclose(b,jnp.array(1.3))
@@ -150,6 +168,7 @@ def actual_mlp():
         return x 
     return mlp 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("program", [mlp_program_1])
 def test_mlp(program, actual_mlp):
     """Tests whether we can use GPush to train a multilayer perceptron"""
@@ -158,6 +177,7 @@ def test_mlp(program, actual_mlp):
     program = PlushyCompiler()(program)
     start_state = PushState(float_jax_expr=[], exec=[], int = []).initialize([],[{"shape":Shape(3),"dtype":"float"}])
     final_state = Interpreter().run(program, state=start_state)
+    assert len(final_state["float_jax_expr"])==1
     expr = final_state["float_jax_expr"][0]
     dag = Dag(expr)
 
@@ -171,16 +191,19 @@ def test_mlp(program, actual_mlp):
     params = final_state.init_params(subkeys[1])
 
     # Loss / grad functions
+    backprop = BackPropagation(dag.fn,MSELoss())
     def loss(output, target):
         return jnp.mean((output-target)**2)
-    grad_fn = dag.grad(loss)
-    
     
     actual_grad = jit(grad(lambda params, input, output: loss(actual_mlp(params,input), output)))
 
+    res, aux = dag.fn(params, [inputs])
+    initial_loss = loss(res, targets)
+    assert pytree_equals(aux,params)
+
     # Training loop
     params = training_loop([dag.fn, actual_mlp], 
-                           [grad_fn, actual_grad], 
+                           [backprop, actual_grad], 
                            params, 
                            inputs, 
                            targets, 
@@ -188,7 +211,10 @@ def test_mlp(program, actual_mlp):
                            0.01)
     
     # Does training converge to the right values?
-    final_loss = loss(dag.fn(params, [inputs]), targets)
+    res,aux = dag.fn(params, [inputs])
+    final_loss = loss(res, targets)
+    assert pytree_equals(aux,params)
+    assert final_loss<initial_loss
     assert final_loss<0.5
 
 # 3x10x10 input -> 6x6x6 -> 6x2x2 -> 24 -> 1
@@ -256,6 +282,7 @@ def actual_cnn():
         return x 
     return cnn 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("program", [cnn_program_1, cnn_program_2])
 def test_cnn(program, actual_cnn):
     """Tests whether we can use GPush to train a CNN"""
@@ -264,6 +291,7 @@ def test_cnn(program, actual_cnn):
     program = PlushyCompiler()(program)
     start_state = PushState(float_jax_expr=[], exec=[], int=[]).initialize([],[{"shape":Shape(3,10,10),"dtype":"float"}])
     final_state = Interpreter().run(program, state=start_state)
+    assert len(final_state["float_jax_expr"])==1
     expr = final_state["float_jax_expr"][0]
     dag = Dag(expr)
 
@@ -277,20 +305,22 @@ def test_cnn(program, actual_cnn):
     params = final_state.init_params(subkeys[2])
 
     # Loss / grad functions
+    backprop = BackPropagation(dag.fn, CrossEntropyLoss())
     def loss(output, target):
         output = nn.log_softmax(output,axis=-1)
         loss = jnp.take_along_axis(output,target[:,None],-1)
         return -jnp.mean(loss)
-    grad_fn = dag.grad(loss)
     
     
     actual_grad = jit(grad(lambda params, input, output: loss(actual_cnn(params,input), output)))
 
-    initial_loss = loss(dag.fn(params, [inputs]), targets)
+    res, aux = dag.fn(params, [inputs])
+    initial_loss = loss(res, targets)
+    assert pytree_equals(aux,params)
 
     # Training loop
     params = training_loop([dag.fn, actual_cnn], 
-                           [grad_fn, actual_grad], 
+                           [backprop, actual_grad], 
                            params, 
                            inputs, 
                            targets, 
@@ -298,7 +328,10 @@ def test_cnn(program, actual_cnn):
                            0.01)
     
     # Does training converge to the right values?
-    final_loss = loss(dag.fn(params, [inputs]), targets)
+    res, aux = dag.fn(params, [inputs])
+    final_loss = loss(res, targets)
+    assert pytree_equals(aux,params)
+    assert final_loss<initial_loss
     assert final_loss<0.01
 
 resnet_program_1 = [InputInstruction("in1",0,"float_jax_expr"),
@@ -476,6 +509,7 @@ def actual_resnet():
         return x 
     return resnet
 
+@pytest.mark.slow
 @pytest.mark.parametrize("program", [resnet_program_1, resnet_program_2])
 def test_resnet(program, actual_resnet):
     """Tests whether we can use GPush to train a CNN"""
@@ -484,6 +518,7 @@ def test_resnet(program, actual_resnet):
     program = PlushyCompiler()(program)
     start_state = PushState(float_jax_expr=[], exec=[], int=[]).initialize([],[{"shape":Shape(3,10,10),"dtype":"float"}])
     final_state = Interpreter().run(program, state=start_state)
+    assert len(final_state["float_jax_expr"])==1
     expr = final_state["float_jax_expr"][0]
     dag = Dag(expr)
 
@@ -497,20 +532,21 @@ def test_resnet(program, actual_resnet):
     params = final_state.init_params(subkeys[2])
 
     # Loss / grad functions
+    backprop = BackPropagation(dag.fn, CrossEntropyLoss())
     def loss(output, target):
         output = nn.log_softmax(output,axis=-1)
         loss = jnp.take_along_axis(output,target[:,None],-1)
         return -jnp.mean(loss)
-    grad_fn = dag.grad(loss)
-    
     
     actual_grad = jit(grad(lambda params, input, output: loss(actual_resnet(params,input), output)))
 
-    initial_loss = loss(dag.fn(params, [inputs]), targets)
+    res, aux = dag.fn(params, [inputs])
+    initial_loss = loss(res, targets)
+    assert pytree_equals(aux,params)
 
     # Training loop
     params = training_loop([dag.fn, actual_resnet], 
-                           [grad_fn, actual_grad], 
+                           [backprop, actual_grad], 
                            params, 
                            inputs, 
                            targets, 
@@ -518,7 +554,253 @@ def test_resnet(program, actual_resnet):
                            0.01)
     
     # Does training converge to the right values?
-    final_loss = loss(dag.fn(params, [inputs]), targets)
+    res, aux = dag.fn(params, [inputs])
+    final_loss = loss(res, targets)
+    assert pytree_equals(aux,params)
+    assert final_loss<initial_loss
     assert final_loss<0.01
+
+
+rnn_program_1 = [ParamInstruction("p1",Shape(100),"float","float_jax_expr"), 
+                 GLOBAL_INSTRUCTIONS["float_jax_dup_graph"],
+                 ParamInstruction("p2",Shape(100,100),"float","float_jax_expr"), 
+                 GLOBAL_INSTRUCTIONS["float_jax_mmul_graph"],
+                 ParamInstruction("p1",Shape(100),"float","float_jax_expr"), 
+                 InputInstruction("in1",0,"float_jax_expr"), 
+                 ParamInstruction("p1",Shape(1,100),"float","float_jax_expr"), 
+                 GLOBAL_INSTRUCTIONS["float_jax_mmul_graph"],
+                 GLOBAL_INSTRUCTIONS["float_jax_add_graph"],
+                 GLOBAL_INSTRUCTIONS["float_jax_add_graph"],
+                 GLOBAL_INSTRUCTIONS["float_jax_tanh_graph"],
+                 GLOBAL_INSTRUCTIONS["float_jax_param_update"],
+                 ParamInstruction("p1",Shape(100,1),"float","float_jax_expr"), 
+                 GLOBAL_INSTRUCTIONS["float_jax_mmul_graph"],
+                 ParamInstruction("p1",Shape(1),"float","float_jax_expr"), 
+                 GLOBAL_INSTRUCTIONS["float_jax_add_graph"]] 
+
+@pytest.fixture
+def actual_rnn():
+    def step(params,input):
+        [h0,w_recur,b_recur,w_in,w_out,b_out] = params
+        # Order of execution needs to be the exact same as in the program, or rounding errors will accumulate
+        r1 = h0@w_recur 
+        r2 = input@w_in 
+        r3 = b_recur+r2 
+        h0 = r1+r3
+        h0 = nn.tanh(h0)
+        output = h0@w_out +b_out 
+        return [h0] + params[1:], output
+    def rnn(params,input):
+        batch_size = input.shape[0]
+        params = map_pytree(lambda x:lax.broadcast(x,(batch_size,)),params)
+        input = jnp.swapaxes(input,0,1)
+        carry,output = lax.scan(vmap(step,in_axes=[0,0]),params,xs=input)
+        # print(output)
+        return jnp.swapaxes(output,0,1)
+    return jit(rnn)
+
+@pytest.mark.slow
+@pytest.mark.parametrize("program", [rnn_program_1])
+def test_rnn(program, actual_rnn):
+    """Tests whether we can use GPush to train an RNN"""
+    # Test single evaluation
+
+    program = PlushyCompiler()(program)
+    start_state = PushState(float_jax_expr=[], exec=[], int=[]).initialize([],[{"shape":Shape(1,),"dtype":"float"}])
+    final_state = Interpreter().run(program, state=start_state)
+    assert len(final_state["float_jax_expr"])==1
+    expr = final_state["float_jax_expr"][0]
+    dag = Dag(expr, recurrent = True)
+
+    hidden_params = np.zeros((len(final_state.params),),dtype="int")
+    hidden_indices = dag.root.hidden_params()
+    for i in hidden_indices:
+        hidden_params[i]=1
+
+    # Test learning
+    key = random.key(152)
+    key, *subkeys = random.split(key,8)
+    inputs = random.normal(subkeys[0],shape=(2,25,1))*0.025+0.01
+    targets = jnp.cumsum(inputs,axis=1)
+    
+    # Initialization
+    params = final_state.init_params(subkeys[1])
+
+    # Loss / grad functions
+    backprop = BPTT(dag.fn, MSELoss(), hidden_params)
+    def loss(output, target):
+        return jnp.mean((output-target)**2)
+    
+    actual_grad = jit(grad(lambda params, input, output: loss(actual_rnn(params,input), output)))
+
+    res, aux = backprop.val(params, [inputs])
+    res_ = actual_rnn(params,inputs)
+    assert jnp.allclose(res,res_)
+    initial_loss = loss(res, targets)
+    assert pytree_equals(aux[1:],params[1:])
+
+    # Training loop
+    params = training_loop([backprop.val, actual_rnn], 
+                           [backprop, actual_grad], 
+                           params, 
+                           inputs, 
+                           targets, 
+                           200, 
+                           0.01)
+    
+    # Does training converge to the right values?
+    res, aux = backprop.val(params, [inputs])
+    final_loss = loss(res, targets)
+    assert pytree_equals(aux[1:],params[1:])
+    assert final_loss<initial_loss
+    assert final_loss<0.005
+
+gru_program_1 = [ParamInstruction("h0",Shape(100),"float","float_jax_expr"), 
+                 GLOBAL_INSTRUCTIONS["float_jax_dup_graph"],
+                 GLOBAL_INSTRUCTIONS["float_jax_dup_graph"],
+                 GLOBAL_INSTRUCTIONS["float_jax_dup_graph"], # 4x h0
+                 ParamInstruction("uz",Shape(100,100),"float","float_jax_expr"), # h0,h0,h0,h0,uz
+                 GLOBAL_INSTRUCTIONS["float_jax_mmul_graph"], # h0,h0,h0,h0@uz
+                 ParamInstruction("bz",Shape(100),"float","float_jax_expr"),  # h0,h0,h0,h0@uz,bz
+                 InputInstruction("in1",0,"float_jax_expr"), 
+                 ParamInstruction("wz",Shape(1,100),"float","float_jax_expr"), 
+                 GLOBAL_INSTRUCTIONS["float_jax_mmul_graph"], # h0,h0,h0,h0@uz,bz, input@wz
+                 GLOBAL_INSTRUCTIONS["float_jax_add_graph"], # h0,h0,h0,h0@uz,bz + input@wz
+                 GLOBAL_INSTRUCTIONS["float_jax_add_graph"], # h0,h0,h0,h0@uz + (bz + input@wz)
+                 GLOBAL_INSTRUCTIONS["float_jax_sigmoid_graph"], # This makes h0,h0,h0,z
+                 ArrayLiteralInstruction("1",jnp.array(1.),"float_jax_expr"),
+                 GLOBAL_INSTRUCTIONS["float_jax_swap_graph"],
+                 GLOBAL_INSTRUCTIONS["float_jax_sub_graph"],
+                 GLOBAL_INSTRUCTIONS["float_jax_dup_graph"],# dup 
+                 ArrayLiteralInstruction("1",jnp.array(1.),"float_jax_expr"),
+                 GLOBAL_INSTRUCTIONS["float_jax_swap_graph"],
+                 GLOBAL_INSTRUCTIONS["float_jax_sub_graph"],# 1-z = h0,h0,h0,1-z,z
+                 GLOBAL_INSTRUCTIONS["float_jax_rot_graph"],# rot = h0,h0,z,h0,1-z
+                 GLOBAL_INSTRUCTIONS["float_jax_mul_graph"],# = h0,h0,z,1-z(h0)
+                 GLOBAL_INSTRUCTIONS["float_jax_rot_graph"],# rot = h0,h0(1-z),h0,z
+                 GLOBAL_INSTRUCTIONS["float_jax_swap_graph"], # h0,h0(1-z),z,h0
+                 GLOBAL_INSTRUCTIONS["float_jax_dup_graph"], # h0,h0(1-z),z,h0,h0
+                 ParamInstruction("ur",Shape(100,100),"float","float_jax_expr"), 
+                 GLOBAL_INSTRUCTIONS["float_jax_mmul_graph"],
+                 ParamInstruction("br",Shape(100),"float","float_jax_expr"), 
+                 InputInstruction("in1",0,"float_jax_expr"), 
+                 ParamInstruction("wr",Shape(1,100),"float","float_jax_expr"), 
+                 GLOBAL_INSTRUCTIONS["float_jax_mmul_graph"],
+                 GLOBAL_INSTRUCTIONS["float_jax_add_graph"],
+                 GLOBAL_INSTRUCTIONS["float_jax_add_graph"],
+                 GLOBAL_INSTRUCTIONS["float_jax_sigmoid_graph"], # This makes h0, h0(1-z),z,h0,r
+                 GLOBAL_INSTRUCTIONS["float_jax_add_graph"], # h0,h0(1-z),z,r+h0
+                 ParamInstruction("uh",Shape(100,100),"float","float_jax_expr"), 
+                 GLOBAL_INSTRUCTIONS["float_jax_mmul_graph"],
+                 ParamInstruction("bh",Shape(100),"float","float_jax_expr"), 
+                 InputInstruction("in1",0,"float_jax_expr"), 
+                 ParamInstruction("wh",Shape(1,100),"float","float_jax_expr"), 
+                 GLOBAL_INSTRUCTIONS["float_jax_mmul_graph"],
+                 GLOBAL_INSTRUCTIONS["float_jax_add_graph"],
+                 GLOBAL_INSTRUCTIONS["float_jax_add_graph"],
+                 GLOBAL_INSTRUCTIONS["float_jax_tanh_graph"], # This makes h0,h0(1-z),z,hhat
+                 GLOBAL_INSTRUCTIONS["float_jax_mul_graph"], # h0,hhat,z
+                 GLOBAL_INSTRUCTIONS["float_jax_add_graph"],
+
+                 GLOBAL_INSTRUCTIONS["float_jax_param_update"],
+                 ParamInstruction("w_out",Shape(100,1),"float","float_jax_expr"), 
+                 GLOBAL_INSTRUCTIONS["float_jax_mmul_graph"],
+                 ParamInstruction("b_out",Shape(1),"float","float_jax_expr"), 
+                 GLOBAL_INSTRUCTIONS["float_jax_add_graph"]] 
+
+@pytest.fixture
+def actual_gru():
+    def step(params,input):
+        [h0,uz,bz,wz,ur,br,wr,uh,bh,wh,w_out,b_out] = params
+        # Order of execution needs to be the exact same as in the program, or rounding errors will accumulate
+        z1 = h0@uz 
+        z2 = input@wz 
+        z3 = bz+z2 
+        z4 = z1+z3 
+        z = nn.sigmoid(z4)
+        r1 = h0@ur
+        r2 = input@wr 
+        r3 = br+r2 
+        r4 = r1+r3 
+        r = nn.sigmoid(r4)
+        h1 = h0+r 
+        h2 = h1@uh 
+        h3 = input@wh 
+        h4 = bh+h3 
+        h5 = h2 + h4
+        hhat = nn.tanh(h5)
+        
+        h7 = jnp.array(1.)-z
+        z_ = jnp.array(1.)-h7
+        h6 = z_*hhat 
+        h8 = h0*h7 
+        h0 = h8 + h6
+        o1 = h0@w_out 
+        output = o1 +b_out 
+        return [h0] + params[1:], output
+    def gru(params,input):
+        batch_size = input.shape[0]
+        params = map_pytree(lambda x:lax.broadcast(x,(batch_size,)),params)
+        input = jnp.swapaxes(input,0,1)
+        carry,output = lax.scan(vmap(step,in_axes=[0,0]),params,xs=input)
+        # print(output)
+        return jnp.swapaxes(output,0,1)
+    return jit(gru)
+
+@pytest.mark.slow
+@pytest.mark.parametrize("program", [gru_program_1])
+def test_gru(program, actual_gru):
+    """Tests whether we can use GPush to train an RNN"""
+    # Test single evaluation
+
+    program = PlushyCompiler()(program)
+    start_state = PushState(float_jax_expr=[], exec=[], int=[]).initialize([],[{"shape":Shape(1,),"dtype":"float"}])
+    final_state = Interpreter().run(program, state=start_state)
+    assert len(final_state["float_jax_expr"])==1
+    expr = final_state["float_jax_expr"][0]
+    dag = Dag(expr, recurrent = True)
+
+    hidden_params = np.zeros((len(final_state.params),),dtype="int")
+    hidden_indices = dag.root.hidden_params()
+    for i in hidden_indices:
+        hidden_params[i]=1
+
+    # Test learning
+    key = random.key(152)
+    key, *subkeys = random.split(key,8)
+    inputs = random.normal(subkeys[0],shape=(2,25,1))*0.025+0.01
+    targets = jnp.cumsum(inputs,axis=1)
+    
+    # Initialization
+    params = final_state.init_params(subkeys[1])
+
+    # Loss / grad functions
+    backprop = BPTT(dag.fn, MSELoss(), hidden_params)
+    def loss(output, target):
+        return jnp.mean((output-target)**2)
+    
+    actual_grad = jit(grad(lambda params, input, output: loss(actual_gru(params,input), output)))
+
+    res, aux = backprop.val(params, [inputs])
+    res_ = actual_gru(params,inputs)
+    assert jnp.allclose(res,res_)
+    initial_loss = loss(res, targets)
+    assert pytree_equals(aux[1:],params[1:])
+
+    # Training loop
+    params = training_loop([backprop.val, actual_gru], 
+                           [backprop, actual_grad], 
+                           params, 
+                           inputs, 
+                           targets, 
+                           200, 
+                           0.01)
+    
+    # Does training converge to the right values?
+    res, aux = backprop.val(params, [inputs])
+    final_loss = loss(res, targets)
+    assert pytree_equals(aux[1:],params[1:])
+    assert final_loss<initial_loss
+    assert final_loss<0.005
 
 # attention_program_1 = []

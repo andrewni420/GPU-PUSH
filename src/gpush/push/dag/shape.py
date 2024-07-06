@@ -124,6 +124,7 @@ def conv(shape1: Shape,
     
     allow_spatial_placeholders = (padding=="SAME" or (isinstance(padding,list) and all([p=="SAME" for p in padding]))) 
 
+
     # All spatial dimensions need to be specified, unless padding is "SAME". Otherwise we'd need to do some fancy arithmetic
     if not allow_spatial_placeholders:
         for i in range(2,n):
@@ -323,6 +324,12 @@ class SizePlaceholder():
         if isinstance(other,SizePlaceholder):
             return self.value==other.value 
         return self.value==other
+    
+    def __ne__(self, other: int | SizePlaceholder):
+        return not self==other
+    
+    def __repr__(self):
+        return self.value
 
 class Shape(tuple):
     """A tuple subclass that holds the shape of a matrix. Supports shape-specific operations such as 
