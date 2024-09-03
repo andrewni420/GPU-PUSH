@@ -1,0 +1,4 @@
+
+
+class Argmap(dict):
+    pass 

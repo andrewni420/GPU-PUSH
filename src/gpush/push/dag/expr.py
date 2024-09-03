@@ -191,7 +191,7 @@ class Literal(Expression):
         # print(f"{self}\n\t inputs {params[self.param_idx].shape} self {self.shape}")
         return self.value, params
     def __str__(self):
-        return f"Literal({self.id}, {self.param_idx}, {self.shape}, {self.dtype})"
+        return f"Literal({self.id}, {self.value}, {self.shape}, {self.dtype})"
     
 def default_arg_reconstructor(children: Arguments, other_args: Arguments) -> Arguments:
     if other_args is None:

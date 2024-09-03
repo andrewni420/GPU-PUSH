@@ -1,8 +1,9 @@
 from abc import ABC, abstractmethod
 from .instruction import CodeBlockClose, Instruction
 from typing import Union
+from .instruction_set import GLOBAL_INSTRUCTIONS
 
-Genome = list[Union[Instruction, CodeBlockClose, "Genome"]]
+Genome = list[Union[Instruction, CodeBlockClose, "Genome", str]]
 Program = list[Union[Instruction, "Program"]]
 
 class Compiler():
@@ -24,9 +25,11 @@ class PlushyCompiler(Compiler):
         ret = []
         cur_depth=0
         for instr in genome:
-            if isinstance(instr,CodeBlockClose):
+            if isinstance(instr,CodeBlockClose) or (isinstance(instr,str) and instr.lower()=="close"):
                 cur_depth = max(0,cur_depth-1)
             else:
+                if isinstance(instr,str):
+                    instr=GLOBAL_INSTRUCTIONS[instr]
                 r = ret 
                 for _ in range(cur_depth):
                     r = r[-1]

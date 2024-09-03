@@ -16,6 +16,7 @@ from jax import grad, jit, vmap
 import pytest 
 from gpush.utils import map_pytree
 import numpy as np 
+from functools import partial
 
 def pytree_equals(tree1,tree2):
     "Tests whether two pytrees have equal array entries"
@@ -802,5 +803,209 @@ def test_gru(program, actual_gru):
     assert pytree_equals(aux[1:],params[1:])
     assert final_loss<initial_loss
     assert final_loss<0.005
+
+
+# vocab = 3
+# d_model = 8
+# context length = 5
+transformer_1 = [InputInstruction("in1",0,"float_jax_expr"), 
+                 # Embedding
+                 ParamInstruction("emb",Shape(3,8),"float","float_jax_expr"), 
+                 "float_jax_mmul_graph",
+                 ArrayLiteralInstruction("d_model",jnp.array(8),"float_jax_expr"),
+                 "float_jax_sqrt_graph",
+                 "float_jax_mul_graph",
+                # Positional Encoding
+                 ParamInstruction("pe", Shape(5,8), "float", "float_jax_expr"),
+                 "float_jax_add_graph",
+                 
+                 # Layer 1: x -> x
+                 "float_jax_dup_graph",
+                 # MHA
+                 # V = (nbatch,nhead,length,dmodel/nhead)
+                 "float_jax_dup_graph",
+                 ParamInstruction("v1",Shape(8,8),"float","float_jax_expr"), 
+                 "float_jax_mmul_graph",
+                 ParamInstruction("v1b",Shape(8),"float","float_jax_expr"), 
+                 "float_jax_add_graph",
+                 LiteralInstruction("4",4,"int"),
+                 "float_jax_chunk_vanilla_graph",
+                 LiteralInstruction("0",0,"int"),
+                 LiteralInstruction("1",1,"int"),
+                 "float_jax_swapaxes_graph",
+                 "float_jax_swap_graph",
+                 
+                 # K = (nbatch,nhead,dmodel/nhead,length)
+                 "float_jax_dup_graph",
+                 ParamInstruction("k1",Shape(8,8),"float","float_jax_expr"), 
+                 "float_jax_mmul_graph",
+                 ParamInstruction("k1b",Shape(8),"float","float_jax_expr"), 
+                 "float_jax_add_graph",
+                 LiteralInstruction("4",4,"int"),
+                 "float_jax_chunk_vanilla_graph",
+                 LiteralInstruction("0",0,"int"),
+                 LiteralInstruction("1",1,"int"),
+                 "float_jax_swapaxes_graph",
+                 "float_jax_swapaxes_vanilla_graph",
+                 "float_jax_swap_graph",
+
+                 # Q = (nbatch,nhead,length,dmodel/nhead)
+                 ParamInstruction("q1",Shape(8,8),"float","float_jax_expr"), 
+                 "float_jax_mmul_graph",
+                 ParamInstruction("q1b",Shape(8),"float","float_jax_expr"), 
+                 "float_jax_add_graph",
+                 LiteralInstruction("4",4,"int"),
+                 "float_jax_chunk_vanilla_graph",
+                 LiteralInstruction("0",0,"int"),
+                 LiteralInstruction("1",1,"int"),
+                 "float_jax_swapaxes_graph",
+                 "float_jax_swap_graph",
+
+                 # Attn = (nbatch,nhead,length,length)
+                 "float_jax_mmul_graph",
+                 ArrayLiteralInstruction("d_model",jnp.array(8),"float_jax_expr"),
+                 "float_jax_sqrt_graph",
+                 "float_jax_div_graph",
+                 "float_jax_softmax_graph",
+                 "float_jax_swap_graph",
+                 "float_jax_mmul_graph",
+
+                 LiteralInstruction("0",0,"int"),
+                 LiteralInstruction("1",1,"int"),
+                 "float_jax_swapaxes_graph",
+                 LiteralInstruction("2",2,"int"),
+                 "float_jax_flatten_graph",
+
+                 # Output = (nbatch, length, dmodel)
+                 ParamInstruction("o1",Shape(8,8),"float","float_jax_expr"), 
+                 "float_jax_mmul_graph",
+                 ParamInstruction("o1b",Shape(8),"float","float_jax_expr"), 
+                 "float_jax_add_graph",
+                 # Add and Norm 
+                 "float_jax_add_graph",
+
+                 # Feed Forward 
+                 "float_jax_dup_graph",
+                 ParamInstruction("ff10",Shape(8,16),"float","float_jax_expr"), 
+                 "float_jax_mmul_graph",
+                 ParamInstruction("ff10b",Shape(16),"float","float_jax_expr"), 
+                 "float_jax_add_graph",
+                 "float_jax_relu_graph",
+                 ParamInstruction("ff11",Shape(16,8),"float","float_jax_expr"), 
+                 "float_jax_mmul_graph",
+                 ParamInstruction("ff11b",Shape(8),"float","float_jax_expr"), 
+                 "float_jax_add_graph",
+                 "float_jax_add_graph",
+
+                 # Output 
+                 ParamInstruction("out",Shape(8,3),"float","float_jax_expr"), 
+                 "float_jax_mmul_graph",
+                 ParamInstruction("outb",Shape(3),"float","float_jax_expr"), 
+                 "float_jax_add_graph",
+                 ]
+
+@pytest.fixture
+def actual_transformer():
+    def transformer(params, input):
+        [emb,pe,v1,v1b,k1,k1b,q1,q1b,o1,o1b,ff10,ff10b,ff11,ff11b,out,outb] = params 
+        x = input 
+        x = (x@emb)
+        x = x*jnp.sqrt(8)
+        x = x + pe 
+        v = x@v1
+        v = v+v1b 
+        v = jnp.reshape(v,[-1,4,2])
+        v = jnp.swapaxes(v,0,1)
+        k = x@k1
+        k = k +k1b 
+        k = jnp.reshape(k,[-1,4,2])
+        k = jnp.swapaxes(k,0,1)
+        q = x@q1
+        q = q+q1b 
+        q = jnp.reshape(q,[-1,4,2])
+        q = jnp.swapaxes(q,0,1)
+        attn = q@jnp.swapaxes(k,-1,-2)
+        attn = attn/jnp.sqrt(8)
+        attn = nn.softmax(attn)
+        attn = attn@v 
+
+        attn = jnp.swapaxes(attn,0,1)
+        attn = jnp.reshape(attn,[5,-1])
+        
+        x = attn@o1+o1b+x
+
+        x_=x
+        x = nn.relu(x@ff10+ff10b)
+        x = x@ff11+ff11b+x_
+
+        x = x@out+outb 
+        return x
+    return transformer 
+
+@pytest.mark.slow
+@pytest.mark.parametrize("program", [transformer_1])
+def test_transformer(program, actual_transformer):
+    """Tests whether we can use GPush to train a multilayer perceptron"""
+    # Test single evaluation
+    actual_transformer = jit(jax.vmap(actual_transformer,(None,0),0))
+
+    program = PlushyCompiler()(program)
+    start_state = PushState(float_jax_expr=[], exec=[], int = []).initialize([],[{"shape":Shape(3),"dtype":"float"}])
+    final_state = Interpreter().run(program, state=start_state)
+    assert len(final_state["float_jax_expr"])==1
+    expr = final_state["float_jax_expr"][-1]
+    dag = Dag(expr)
+
+    # Test learning
+    key = random.key(152)
+    key, *subkeys = random.split(key,3)
+    inputs = random.randint(subkeys[0],(10,5),0,2)
+    targets = inputs
+
+    # Initialization
+    params = final_state.init_params(subkeys[1])
+    
+    
+    # output,aux_ = dag.fn(params, [nn.one_hot(inputs,3)])
+    # print(output- jit(actual_transformer)(params,nn.one_hot(inputs,3)))
+    # assert jnp.allclose(output, jit(actual_transformer)(params,nn.one_hot(inputs,3)))
+    # print("DONE")
+    # exit(0)
+    
+    # Loss / grad functions
+    loss = CrossEntropyLoss()
+    backprop = BackPropagation(dag.fn,loss)
+    
+    actual_grad = jit(grad(lambda params, input, output: CrossEntropyLoss()(params,actual_transformer(params,input), output)))
+
+    res, aux = dag.fn(params, [nn.one_hot(inputs,3)])
+    initial_loss = loss(params,res, targets)
+    assert pytree_equals(aux,params)
+
+    for _ in range(200):
+        key, subkey = random.split(key)
+        mask = random.randint(subkey,(10,5),0,2)
+        _inputs = jnp.where(mask==0,3,inputs)
+        _inputs = nn.one_hot(_inputs,3)
+
+        (loss,aux), dparams = backprop(params,[_inputs], targets)
+        print(f"iter {_} loss {loss}")
+        actual_dparams = actual_grad(params,_inputs,targets)
+
+        output,aux_ = dag.fn(params, [_inputs])
+        assert jnp.allclose(output, actual_transformer(params,_inputs))
+        assert all([jnp.allclose(a,b) for a,b in zip(aux,aux_)])
+        for dp,actual_dp in zip(dparams,actual_dparams):
+            assert jnp.allclose(dp,actual_dp)
+
+        params = [p-0.01*dp for p,dp in zip(params, dparams)]
+    
+    # Does training converge to the right values?
+    loss = CrossEntropyLoss()
+    res,aux = dag.fn(params, [nn.one_hot(inputs,3)])
+    final_loss = loss(params,res, targets)
+    assert pytree_equals(aux,params)
+    assert final_loss<initial_loss
+    assert final_loss<2
 
 # attention_program_1 = []

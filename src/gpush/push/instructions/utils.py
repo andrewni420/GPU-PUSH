@@ -77,8 +77,8 @@ def create_instructions(fn: Callable,
     """Default function to process instructions. Creates an eager function. If limiter is not None, creates limited versions of the functions. If signature is not None, 
     creates graph versions of the functions."""
     non_expr_stacks = set() if non_expr_stacks is None else non_expr_stacks
-    in_expr_stacks = transform_stacks(lambda x:f"{x}_expr", input_stacks, non_expr_stacks=non_expr_stacks)
-    out_expr_stacks = transform_stacks(lambda x:f"{x}_expr", output_stacks, non_expr_stacks=non_expr_stacks)
+    in_expr_stacks = transform_stacks(lambda x:(f"{x}_expr" if "jax" in x else x), input_stacks, non_expr_stacks=non_expr_stacks)
+    out_expr_stacks = transform_stacks(lambda x:(f"{x}_expr" if "jax" in x else x), output_stacks, non_expr_stacks=non_expr_stacks)
     graph_fn = lambda *args,**kwargs: fn(*args, **{k.replace("_expr",""):v for k,v in kwargs.items()})
     instructions = []
     base_name = base_name or fn.__name__

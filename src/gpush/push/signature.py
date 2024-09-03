@@ -170,21 +170,51 @@ def flatten_signature(*args: Expression, ndim=1, **kwargs: Expression):
     
     return shape[:ndim-1].conj(total), dtype 
 
-# def reshape_signature(*args: Expression, cast_to: str = None, **kwargs: Expression):
-#     "Returns the same datatype as the input array, with optional reshaping"
-#     shapes, dtypes = process_args(*args, **kwargs)
-#     if len(shapes)>1 or len(dtypes)>1:
-#         raise ValueError("Can only calculate the reshape signature of one array at a time")
+def swapaxes_signature(*args: Expression, ax1=-1, ax2=-2, **kwargs: Expression):
+    "Swaps two axes"
+    shapes, dtypes = process_args(*args, **kwargs)
+    if len(shapes)>1 or len(dtypes)>1:
+        raise ValueError("Can only calculate the transpose signature of one array at a time")
     
-#     # Optional type cast
-#     if cast_to is None:
-#         dtype = dtypes[0] 
-#     else:
-#         dtype = cast_to 
+    axes = (ax1,ax2)
     
-#     # Same shape
-#     shape = shapes[0] 
+    # Same shape
+    shape,dtype = shapes[0],dtypes[0]
 
-#     return shape, dtype 
+    # Out of bounds
+    for a in axes:
+        if a>=len(shape) or a<-len(shape):
+            return None, dtype 
+    
+    # Swap axes
+    shape = shape.assoc(axes[0],shape[axes[1]]).assoc(axes[1],shape[axes[0]])
+    
+    return shape, dtype
+
+def chunk_signature(*args: Expression, n=1, axis=-1,**kwargs: Expression):
+    "Returns the same datatype as the input array, with optional reshaping of the last axis. Chunks (...,d,...) into (...,n,d/n,...)"
+    shapes, dtypes = process_args(*args, **kwargs)
+    if len(shapes)>1 or len(dtypes)>1:
+        raise ValueError("Can only calculate the chunk signature of one array at a time")
+    
+    shape, dtype = shapes[0],dtypes[0] 
+    if shape is None:
+        return None, dtype
+    
+    if axis<-len(shape) or axis>=len(shape):
+        return None, dtype 
+
+    if isinstance(shape[axis],SizePlaceholder) and not shape[axis].is_set():
+        return None, dtype 
+    
+    # Indivisible axis size
+    if shape[axis]%n!=0:
+        return None, dtype 
+    
+    inc_axis = len(shape) if axis==-1 else axis+1
+    shape = shape[:axis].conj(n).conj(shape[axis]//n)+shape[inc_axis:]
+
+    return shape, dtype 
+
 
 
